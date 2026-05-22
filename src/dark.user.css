@@ -1,0 +1,24 @@
+/* ==UserStyle==
+@name           inex.ge dark
+@namespace      github.com/Mayurifag/inex.ge-tweaks
+@version        0.1.0
+@description    Dark theme skeleton for inex.ge.
+@author         Mayurifag
+==/UserStyle== */
+
+@-moz-document domain("inex.ge") {
+  :root {
+    --inex-bg: #0f1115;
+    --inex-surface: #171a21;
+    --inex-text: #e7eaf0;
+    --inex-muted: #a1a8b3;
+    --inex-border: #2b303b;
+  }
+
+  html,
+  body {
+    color-scheme: dark;
+    background: var(--inex-bg) !important;
+    color: var(--inex-text) !important;
+  }
+}
