@@ -1,106 +1,12 @@
 import { DYNAMIC_TRANSLATIONS, TRANSLATIONS } from './englishTranslations.js';
 
 const GEORGIAN_TEXT = /[\u10a0-\u10ff]/;
-const TRANSLATION_REGISTRY_KEY = 'inex.ge-tweaks.translationRegistry.v1';
 const HISTORY_PATCHED_KEY = 'inexEnglishLanguagePatched';
+const TRANSLATED_ATTRIBUTES = ['alt', 'aria-label', 'title', 'placeholder'];
+const OBSERVED_ATTRIBUTES = [...TRANSLATED_ATTRIBUTES, 'href'];
 
-const usedTranslations = new Set();
-const missingTranslations = new Set();
-let translationRegistry;
-let auditTimer;
-let auditPath;
 let translationTimer;
 const pendingTranslationRoots = new Set();
-
-function currentTranslationPath() {
-  return location.pathname.replace(/^\/(en|ka)(?=\/|$)/, '/:lang');
-}
-
-function loadTranslationRegistry() {
-  if (translationRegistry) return translationRegistry;
-
-  try {
-    translationRegistry = JSON.parse(localStorage.getItem(TRANSLATION_REGISTRY_KEY)) || {};
-  } catch {
-    translationRegistry = {};
-  }
-
-  return translationRegistry;
-}
-
-function saveTranslationRegistry(registry) {
-  localStorage.setItem(TRANSLATION_REGISTRY_KEY, JSON.stringify(registry));
-}
-
-function resetPageAuditIfNeeded() {
-  const path = currentTranslationPath();
-
-  if (auditPath === path) return;
-
-  auditPath = path;
-  usedTranslations.clear();
-  missingTranslations.clear();
-}
-
-function recordTranslation(source, translation) {
-  resetPageAuditIfNeeded();
-  usedTranslations.add(source);
-
-  const path = currentTranslationPath();
-  const registry = loadTranslationRegistry();
-  const entry = registry[source] || { translation, paths: [] };
-
-  entry.translation = translation;
-  entry.paths = [...new Set([...entry.paths, path])].sort();
-  entry.lastSeenAt = new Date().toISOString();
-  registry[source] = entry;
-}
-
-function recordMissingTranslation(source) {
-  resetPageAuditIfNeeded();
-  missingTranslations.add(source);
-}
-
-function scheduleTranslationAudit() {
-  clearTimeout(auditTimer);
-  auditTimer = setTimeout(reportTranslationAudit, 1200);
-}
-
-function reportTranslationAudit() {
-  const path = currentTranslationPath();
-  const registry = loadTranslationRegistry();
-
-  saveTranslationRegistry(registry);
-
-  const unusedTranslations = [];
-
-  for (const [source, entry] of Object.entries(registry)) {
-    if (!entry.paths?.includes(path)) continue;
-    if (usedTranslations.has(source)) continue;
-
-    unusedTranslations.push({
-      source,
-      translation: entry.translation,
-      path,
-      recordedPaths: entry.paths,
-    });
-  }
-
-  if (unusedTranslations.length) {
-    console.warn('[inex.ge tweaks] Translations were not used on this page anymore', {
-      count: unusedTranslations.length,
-      samples: unusedTranslations.slice(0, 20),
-    });
-  }
-
-  if (missingTranslations.size) {
-    console.warn('[inex.ge tweaks] Missing English translations', {
-      path,
-      count: missingTranslations.size,
-      samples: [...missingTranslations].slice(0, 20),
-    });
-  }
-}
 
 function normalizeText(text) {
   return text.replace(/\s+/g, ' ').trim();
@@ -120,9 +26,9 @@ function englishUrl(url) {
   const next = new URL(url, location.href);
 
   if (next.hostname !== location.hostname) return null;
-  if (!next.pathname.startsWith('/ka/')) return null;
+  if (!/^\/ka(?:\/|$)/.test(next.pathname)) return null;
 
-  next.pathname = next.pathname.replace(/^\/ka(?=\/)/, '/en');
+  next.pathname = next.pathname.replace(/^\/ka(?=\/|$)/, '/en');
   return next.href;
 }
 
@@ -159,25 +65,17 @@ function translateNodeText(node) {
   const dynamicTranslation = translation ?? translateDynamicText(value);
 
   if (dynamicTranslation !== value) {
-    recordTranslation(value, dynamicTranslation);
     node.nodeValue = node.nodeValue.replace(node.nodeValue.trim(), dynamicTranslation);
-  } else if (GEORGIAN_TEXT.test(value)) {
-    recordMissingTranslation(value);
   }
 }
 
 function translateAttributes(element) {
-  for (const attribute of ['alt', 'aria-label', 'title', 'placeholder']) {
+  for (const attribute of TRANSLATED_ATTRIBUTES) {
     const value = element.getAttribute(attribute);
     if (!value || !GEORGIAN_TEXT.test(value)) continue;
 
     const translation = TRANSLATIONS.get(normalizeText(value));
-    if (translation) {
-      recordTranslation(normalizeText(value), translation);
-      element.setAttribute(attribute, translation);
-    } else {
-      recordMissingTranslation(normalizeText(value));
-    }
+    if (translation) element.setAttribute(attribute, translation);
   }
 
   if (element instanceof HTMLAnchorElement) {
@@ -223,7 +121,6 @@ function flushPendingTranslations() {
   for (const node of pendingTranslationRoots) translateTree(node);
   pendingTranslationRoots.clear();
   hideEnglishLanguageChooser();
-  scheduleTranslationAudit();
 }
 
 function scheduleTranslateTree(node) {
@@ -239,6 +136,7 @@ function observeTranslations() {
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) scheduleTranslateTree(node);
       if (mutation.type === 'characterData') scheduleTranslateTree(mutation.target);
+      if (mutation.type === 'attributes') scheduleTranslateTree(mutation.target);
     }
   });
 
@@ -246,6 +144,8 @@ function observeTranslations() {
     childList: true,
     subtree: true,
     characterData: true,
+    attributes: true,
+    attributeFilter: OBSERVED_ATTRIBUTES,
   });
 }
 
@@ -253,8 +153,20 @@ function bindEnglishNavigation() {
   document.addEventListener(
     'click',
     (event) => {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+
       const anchor = event.target instanceof Element && event.target.closest('a[href]');
       if (!(anchor instanceof HTMLAnchorElement)) return;
+      if (anchor.target && anchor.target !== '_self') return;
 
       const href = englishUrl(anchor.href);
       if (!href) return;
@@ -288,15 +200,10 @@ function bindLazyTranslationPasses() {
   for (const delay of [500, 1500, 3000, 6000]) {
     setTimeout(() => scheduleTranslateTree(document.documentElement), delay);
   }
-
-  addEventListener('scroll', () => scheduleTranslateTree(document.documentElement), {
-    passive: true,
-  });
 }
 
 export function applyEnglishLanguage() {
   redirectToEnglish();
-  resetPageAuditIfNeeded();
 
   if (document.readyState === 'loading') {
     document.addEventListener(
@@ -304,14 +211,12 @@ export function applyEnglishLanguage() {
       () => {
         translateTree(document.documentElement);
         hideEnglishLanguageChooser();
-        scheduleTranslationAudit();
       },
       { once: true },
     );
   } else {
     translateTree(document.documentElement);
     hideEnglishLanguageChooser();
-    scheduleTranslationAudit();
   }
 
   observeTranslations();

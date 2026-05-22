@@ -77,6 +77,13 @@ function isEnabled() {
 function setEnabled(value) {
   GM_setValue(STORAGE_KEY, value);
   registerMenuCommand();
+
+  if (!value && isParcelsPath()) {
+    restoreRows();
+    location.reload();
+    return;
+  }
+
   updateEnhancedParcels();
 }
 
@@ -265,11 +272,13 @@ function enhanceRows() {
     );
   }
 
-  inferMissingOrigins(rows);
+  const visibleRows = rows.filter((row) => !row.classList.contains(HIDDEN_CLASS));
+
+  inferMissingOrigins(visibleRows);
 
   hideEmptyGroups();
   hideEmptyFlights();
-  flattenRows(rows);
+  flattenRows(visibleRows);
 }
 
 function enhanceInfo(info, row, side) {
@@ -440,17 +449,33 @@ function hideEmptyFlights() {
 }
 
 function flattenRows(rows) {
+  if (!rows.length) {
+    restoreRows();
+    return;
+  }
+
   const list = getFlatList();
-  if (!list || !rows.length) return;
+  if (!list) return;
 
   const sortedRows = [...rows].sort(compareRows);
   const nextChildren = getFlatListChildren(list, sortedRows);
   const currentChildren = [...list.children];
+  const nextChildSet = new Set(nextChildren);
   const isSorted =
     currentChildren.length === nextChildren.length &&
     nextChildren.every((child, index) => currentChildren[index] === child);
 
   if (!isSorted) {
+    for (const child of currentChildren) {
+      if (nextChildSet.has(child)) continue;
+
+      if (child.matches?.(ROW_SELECTOR)) {
+        restoreRow(child);
+      } else {
+        child.remove();
+      }
+    }
+
     for (const child of nextChildren) {
       if (child.matches?.(ROW_SELECTOR)) rememberRowPosition(child);
       list.append(child);
@@ -572,15 +597,19 @@ function restoreRows() {
   if (!list) return;
 
   for (const row of [...list.querySelectorAll(ROW_SELECTOR)]) {
-    const position = rowPositions.get(row);
-    if (!position?.parent?.isConnected) continue;
-
-    const nextSibling =
-      position.nextSibling?.parentElement === position.parent ? position.nextSibling : null;
-    position.parent.insertBefore(row, nextSibling);
+    restoreRow(row);
   }
 
   list.remove();
+}
+
+function restoreRow(row) {
+  const position = rowPositions.get(row);
+  if (!position?.parent?.isConnected) return;
+
+  const nextSibling =
+    position.nextSibling?.parentElement === position.parent ? position.nextSibling : null;
+  position.parent.insertBefore(row, nextSibling);
 }
 
 function compareRows(a, b) {
@@ -714,6 +743,11 @@ function updateTrackingDisplay(tracking, trackingCode, description) {
 
   const text = description ? prettifyPackageName(description) : trackingCode;
   if (text && tracking.textContent?.trim() !== text) tracking.textContent = text;
+  if (description) {
+    tracking.setAttribute(DESCRIPTION_ATTRIBUTE, text);
+  } else {
+    tracking.removeAttribute(DESCRIPTION_ATTRIBUTE);
+  }
   tracking.classList.remove('inex-enhanced-parcels__tracking--description');
   tracking.classList.remove(HIDDEN_CLASS);
 }
@@ -1132,17 +1166,25 @@ function collectOriginValues(source, values) {
 
 function getCountryInfo(values) {
   const countries = [
-    ['US', 'USA', /\b(?:us|usa|america|united states|აშშ|ამერიკა|сша|америк)/i],
-    ['UK', 'United Kingdom', /\b(?:uk|gb|britain|united kingdom|დიდი ბრიტანეთი|британ)/i],
-    ['CN', 'China', /\b(?:cn|china|ჩინეთი|китай)/i],
-    ['TR', 'Turkey', /\b(?:tr|turkey|თურქეთი|турци)/i],
-    ['DE', 'Germany', /\b(?:de|germany|გერმანია|герман)/i],
-    ['GR', 'Greece', /\b(?:gr|greece|საბერძნეთი|греци)/i],
-    ['IT', 'Italy', /\b(?:it|italy|იტალია|итали)/i],
-    ['ES', 'Spain', /\b(?:es|spain|ესპანეთი|испан)/i],
-    ['PL', 'Poland', /\b(?:pl|poland|პოლონეთი|польш)/i],
-    ['CY', 'Cyprus', /\b(?:cy|cyprus|კვიპროსი|кипр)/i],
-    ['GE', 'Georgia', /\b(?:ge|georgia|საქართველო|грузи)/i],
+    [
+      'US',
+      'USA',
+      /(?:^|[^a-z])(?:us|usa)(?:$|[^a-z])|america|united states|აშშ|ამერიკა|сша|америк/i,
+    ],
+    [
+      'UK',
+      'United Kingdom',
+      /(?:^|[^a-z])(?:uk|gb)(?:$|[^a-z])|britain|united kingdom|დიდი ბრიტანეთი|британ/i,
+    ],
+    ['CN', 'China', /(?:^|[^a-z])cn(?:$|[^a-z])|china|ჩინეთი|китай/i],
+    ['TR', 'Turkey', /(?:^|[^a-z])tr(?:$|[^a-z])|turkey|თურქეთი|турци/i],
+    ['DE', 'Germany', /(?:^|[^a-z])de(?:$|[^a-z])|germany|გერმანია|герман/i],
+    ['GR', 'Greece', /(?:^|[^a-z])gr(?:$|[^a-z])|greece|საბერძნეთი|греци/i],
+    ['IT', 'Italy', /(?:^|[^a-z])it(?:$|[^a-z])|italy|იტალია|итали/i],
+    ['ES', 'Spain', /(?:^|[^a-z])es(?:$|[^a-z])|spain|ესპანეთი|испан/i],
+    ['PL', 'Poland', /(?:^|[^a-z])pl(?:$|[^a-z])|poland|პოლონეთი|польш/i],
+    ['CY', 'Cyprus', /(?:^|[^a-z])cy(?:$|[^a-z])|cyprus|კვიპროსი|кипр/i],
+    ['GE', 'Georgia', /(?:^|[^a-z])ge(?:$|[^a-z])|georgia|საქართველო|грузи/i],
   ];
 
   for (const value of values) {
