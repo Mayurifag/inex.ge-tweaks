@@ -5,7 +5,8 @@ import { stripUserStyle } from './scripts/userstyle-css.mjs';
 
 const ICON =
   'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHBhdGggZD0iTTMyIDQgTDU4IDE3IFY0NyBMMzIgNjAgTDYgNDcgVjE3IFogTTYgMTcgTDMyIDMwIEw1OCAxNyBNMzIgMzAgVjYwIiBmaWxsPSJub25lIiBzdHJva2U9IiMwMDY2Y2MiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==';
-const USERSCRIPT_URL = 'https://mayurifag.github.io/inex.ge-tweaks/inex.ge-tweaks.user.js';
+const USERSCRIPT_URL =
+  'https://raw.githubusercontent.com/Mayurifag/inex.ge-tweaks/dist/inex.ge-tweaks.user.js';
 
 function outputFileName() {
   return 'inex.ge-tweaks.user.js';

@@ -1,20 +1,15 @@
 import { readFileSync } from 'node:fs';
 
 const js = readFileSync('dist/inex.ge-tweaks.user.js', 'utf8');
+const userscriptUrl =
+  'https://raw.githubusercontent.com/Mayurifag/inex.ge-tweaks/dist/inex.ge-tweaks.user.js';
 
 const checks = [
   [/^\/\/ @name\s+inex\.ge tweaks$/m.test(js), 'userscript name is missing from build'],
   [/^\/\/ @match\s+https:\/\/inex\.ge\/\*$/m.test(js), 'inex.ge match rule is missing from build'],
+  [js.includes(`// @updateURL    ${userscriptUrl}`), 'userscript update URL is missing from build'],
   [
-    /^\/\/ @updateURL\s+https:\/\/mayurifag\.github\.io\/inex\.ge-tweaks\/inex\.ge-tweaks\.user\.js$/m.test(
-      js,
-    ),
-    'userscript update URL is missing from build',
-  ],
-  [
-    /^\/\/ @downloadURL\s+https:\/\/mayurifag\.github\.io\/inex\.ge-tweaks\/inex\.ge-tweaks\.user\.js$/m.test(
-      js,
-    ),
+    js.includes(`// @downloadURL  ${userscriptUrl}`),
     'userscript download URL is missing from build',
   ],
   [js.includes('--inex-bg'), 'dark CSS is missing from build'],
