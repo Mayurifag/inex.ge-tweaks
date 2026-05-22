@@ -12,11 +12,12 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "test": "node --test",
+    "test": "node --test \"src/**/*.test.js\" \"scripts/**/*.test.mjs\"",
     "stylelint": "stylelint \"src/**/*.css\"",
     "stylelint:fix": "stylelint \"src/**/*.css\" --fix",
-    "smoke:build": "node scripts/check-build.mjs",
-    "format": "prettier --check ."
+    "smoke:build": "npm run build && node scripts/check-build.mjs",
+    "format": "npm run formatting",
+    "formatting": "prettier --check ."
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

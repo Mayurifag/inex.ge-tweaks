@@ -4,6 +4,7 @@ node_modules/
 Thumbs.db
 .vite/
 dist/
+browser-data/
 *.png
 *.jpg
 .sisyphus/

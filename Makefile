@@ -1,4 +1,4 @@
-.PHONY: install dev build lint test stylelint smoke format ci clean
+.PHONY: install dev build lint test stylelint smoke format formatting ci clean
 
 install:
 	npm ci
@@ -19,12 +19,15 @@ stylelint:
 	npm run stylelint
 
 format:
-	npx prettier --check .
+	npm run formatting
+
+formatting:
+	npm run formatting
 
 smoke:
 	npm run smoke:build
 
-ci: lint test stylelint format build smoke
+ci: lint test stylelint formatting smoke
 
 clean:
 	rm -rf node_modules dist

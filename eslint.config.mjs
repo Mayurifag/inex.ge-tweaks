@@ -3,7 +3,7 @@ import globals from 'globals';
 import prettier from 'eslint-config-prettier/flat';
 
 export default [
-  { ignores: ['node_modules/**', 'dist/**'] },
+  { ignores: ['node_modules/**', 'dist/**', 'browser-data/**'] },
   js.configs.recommended,
   {
     files: ['src/**/*.js'],
