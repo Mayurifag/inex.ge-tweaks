@@ -1,8 +1,11 @@
 import { readFileSync } from 'node:fs';
 
 const js = readFileSync('dist/inex.ge-tweaks.user.js', 'utf8');
+const css = readFileSync('dist/dark.user.css', 'utf8');
 const userscriptUrl =
   'https://raw.githubusercontent.com/Mayurifag/inex.ge-tweaks/dist/inex.ge-tweaks.user.js';
+const userstyleUrl =
+  'https://raw.githubusercontent.com/Mayurifag/inex.ge-tweaks/dist/dark.user.css';
 
 const checks = [
   [/^\/\/ @name\s+inex\.ge tweaks$/m.test(js), 'userscript name is missing from build'],
@@ -14,6 +17,11 @@ const checks = [
   ],
   [js.includes('--inex-bg'), 'dark CSS is missing from build'],
   [!js.includes('==UserStyle=='), 'userstyle metadata leaked into userscript build'],
+  [/==UserStyle==/.test(css), 'userstyle metadata is missing from CSS build'],
+  [
+    css.includes(`@updateURL      ${userstyleUrl}`),
+    'userstyle update URL is missing from CSS build',
+  ],
 ];
 
 for (const [ok, message] of checks) {
