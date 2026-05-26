@@ -12,6 +12,9 @@ const FILTER_STORAGE_KEY = 'parcels_filter_open';
 const CACHE_STORAGE_KEY = 'inex_enhanced_parcels_data_v2';
 const ROOT_CLASS = 'inex-enhanced-parcels';
 const HIDDEN_CLASS = 'inex-enhanced-hidden';
+const CONTENTS_CLASS = 'inex-enhanced-parcels__contents';
+const SECTION_CLASS = 'inex-enhanced-parcels__section';
+const SECTION_COLLAPSED_CLASS = 'inex-enhanced-parcels__row--section-collapsed';
 const SIDE_CLASS = 'inex-enhanced-parcels__side';
 const ACTIONS_CLASS = 'inex-enhanced-parcels__actions';
 const TRACKING_CODE_ATTRIBUTE = 'data-inex-tracking-code';
@@ -41,6 +44,7 @@ let parcelDataFetchedAt = 0;
 let parcelInfoByTracking = new Map();
 let rowOrderCounter = 0;
 const rowOrders = new WeakMap();
+const collapsedSections = new Set();
 
 export function applyEnhancedParcels() {
   GM_addStyle(enhancedParcelsCss);
@@ -267,7 +271,7 @@ function enhanceRows() {
   const visibleRows = rows.filter((row) => !row.classList.contains(HIDDEN_CLASS));
 
   inferMissingOrigins(visibleRows);
-  sortRowsInPlace(visibleRows);
+  renderRowSections(visibleRows);
 
   hideEmptyGroups();
   hideEmptyFlights();
@@ -461,23 +465,128 @@ function hideEmptyFlights() {
   }
 }
 
-function sortRowsInPlace(rows) {
-  const rowsByParent = new Map();
+function renderRowSections(rows) {
+  const panel =
+    rows[0]?.closest('.inex-enhanced-parcels__panel') ||
+    document.querySelector('.inex-enhanced-parcels__panel');
+  if (!panel) return;
 
   for (const row of rows) {
-    if (!row.parentElement) continue;
-
-    const siblings = rowsByParent.get(row.parentElement) || [];
-    siblings.push(row);
-    rowsByParent.set(row.parentElement, siblings);
+    if (panel.contains(row)) flattenRowAncestors(row, panel);
   }
 
-  for (const siblings of rowsByParent.values()) {
-    const sorted = [...siblings].sort(compareRows);
-    if (sorted.every((row, index) => row === siblings[index])) continue;
+  const sections = getRowSections([...rows].sort(compareRows));
+  removeUnusedSectionDividers(
+    panel,
+    sections.map((section) => section.type),
+  );
 
-    for (const row of sorted) row.parentElement?.append(row);
+  let order = 10;
+  let dividerAnchor = panel.querySelector(':scope > .inex-enhanced-parcels__panel-header');
+  for (const section of sections) {
+    const collapsed = collapsedSections.has(section.type);
+    const divider = getSectionDivider(
+      panel,
+      section.type,
+      section.label,
+      section.rows.length,
+      collapsed,
+    );
+
+    placeSectionDivider(panel, divider, dividerAnchor);
+    dividerAnchor = divider;
+    divider.style.order = String(order++);
+    for (const row of section.rows) {
+      row.style.order = String(order++);
+      row.classList.toggle(SECTION_COLLAPSED_CLASS, collapsed);
+      orderRowDetails(row, order++, collapsed);
+    }
   }
+}
+
+function placeSectionDivider(parent, divider, anchor) {
+  const nextSibling = anchor?.nextSibling || parent.firstChild;
+  if (nextSibling !== divider) parent.insertBefore(divider, nextSibling);
+}
+
+function flattenRowAncestors(row, root) {
+  let element = row.parentElement;
+
+  while (element && element !== root) {
+    element.classList.add(CONTENTS_CLASS);
+    element = element.parentElement;
+  }
+}
+
+function orderRowDetails(row, order, collapsed) {
+  let element = row.nextElementSibling;
+
+  while (element && !element.matches?.(ROW_SELECTOR)) {
+    if (!element.classList.contains(SECTION_CLASS)) {
+      element.style.order = String(order);
+      element.classList.toggle(SECTION_COLLAPSED_CLASS, collapsed);
+    }
+    element = element.nextElementSibling;
+  }
+}
+
+function getRowSections(rows) {
+  const sections = [
+    { type: 'arrived', label: 'Arrived', rows: [] },
+    { type: 'active', label: 'In progress', rows: [] },
+  ];
+
+  for (const row of rows) {
+    if (getRowSortInfo(row).arrived) {
+      sections[0].rows.push(row);
+    } else {
+      sections[1].rows.push(row);
+    }
+  }
+
+  return sections.filter((section) => section.rows.length);
+}
+
+function getSectionDivider(parent, type, label, count, collapsed) {
+  let divider = parent.querySelector(`:scope > .${SECTION_CLASS}[data-section="${type}"]`);
+
+  if (!divider) {
+    divider = document.createElement('div');
+    divider.className = SECTION_CLASS;
+    divider.dataset.section = type;
+    divider.tabIndex = 0;
+    divider.setAttribute('role', 'button');
+    divider.addEventListener('click', () => toggleSection(type));
+    divider.addEventListener('keydown', (event) => {
+      if (![' ', 'Enter'].includes(event.key)) return;
+
+      event.preventDefault();
+      toggleSection(type);
+    });
+    parent.append(divider);
+  }
+
+  divider.textContent = `${label} · ${count}`;
+  divider.setAttribute('aria-expanded', String(!collapsed));
+  return divider;
+}
+
+function removeUnusedSectionDividers(parent, types) {
+  for (const divider of document.querySelectorAll(`.${SECTION_CLASS}`)) {
+    if (divider.parentElement !== parent || !types.includes(divider.dataset.section)) {
+      divider.remove();
+    }
+  }
+}
+
+function toggleSection(type) {
+  if (collapsedSections.has(type)) {
+    collapsedSections.delete(type);
+  } else {
+    collapsedSections.add(type);
+  }
+
+  scheduleEnhance();
 }
 
 function compareRows(a, b) {
