@@ -8,5 +8,6 @@
 - `src/dark.user.css` is dual-use Userscript + Stylus/UserCSS; keep order: metadata, `:root` tokens, base, components, route-specific.
 - Use `--inex-*` vars for repeated dark colors; define in `:root` first.
 - Keep UserCSS stripping outside `vite.config.mjs`; helper is `scripts/userstyle-css.mjs`.
+- Keep `optimizeDeps.exclude: ['vite-plugin-monkey/dist/client']`; dev install can break if Vite prebundles the monkey client.
 - `secrets.txt` is git-crypt encrypted and uses `email=...` / `password=...`.
 - Do not add Playwright MCP artifacts or old selectors/features unless verified against the redesigned site.

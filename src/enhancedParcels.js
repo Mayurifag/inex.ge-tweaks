@@ -12,27 +12,26 @@ const FILTER_STORAGE_KEY = 'parcels_filter_open';
 const CACHE_STORAGE_KEY = 'inex_enhanced_parcels_data_v2';
 const ROOT_CLASS = 'inex-enhanced-parcels';
 const HIDDEN_CLASS = 'inex-enhanced-hidden';
-const FLAT_LIST_CLASS = 'inex-enhanced-parcels__flat-list';
-const SECTION_CLASS = 'inex-enhanced-parcels__section';
-const SECTION_COLLAPSED_CLASS = 'inex-enhanced-parcels__row--section-collapsed';
 const SIDE_CLASS = 'inex-enhanced-parcels__side';
 const ACTIONS_CLASS = 'inex-enhanced-parcels__actions';
 const TRACKING_CODE_ATTRIBUTE = 'data-inex-tracking-code';
 const DESCRIPTION_ATTRIBUTE = 'data-inex-description';
 const ORIGIN_ATTRIBUTE = 'data-inex-origin';
-const ROW_INTERACTION_ATTRIBUTE = 'data-inex-row-interaction';
-const ROW_RESTORED_ATTRIBUTE = 'data-inex-restored-for-click';
+const DETAIL_USER_FIELD_ATTRIBUTE = 'data-inex-user-detail-hidden';
 const TAKEOUT_STATUS = '5';
 const TAKEOUT_RE = /^(?:Takeout|Taken\s*Out|გატანილი|Забрано|Выдано)$/i;
 const ARRIVED_RE = /^(?:Arrived|ჩამოსულ(?:ია|ი)?|Прибыл|Прибыло)$/i;
 const BATUMI_RE = /batumi|ბათუმ|батуми/i;
+const USER_DETAIL_LABEL_RE =
+  /^(?:User|Customer|Receiver Client|Subuser|Trustee|მომხმარებელი|მიმღები მომხმარებელი|ქვემომხმარებელი|მინდობილი პირი)(?:\s*[/|]\s*(?:User|Customer|Receiver Client|Subuser|Trustee|მომხმარებელი|მიმღები მომხმარებელი|ქვემომხმარებელი|მინდობილი პირი))*:?$/i;
+const SYSTEM_USER_RE =
+  /^(?:System|System user|Current user|სისტემა|სისტემური მომხმარებელი|მიმდინარე მომხმარებელი)$/i;
 const ROW_SELECTOR =
   'div[class*="cursor-pointer"][class*="bg-additional-background-2"][class*="p-4"][class*="lg:flex-row"]';
 const GROUP_SELECTOR = 'div[class*="mt-2"][class*="px-2.5"]';
 const API_BASE = 'https://inex.ge/api/v1';
 const DATA_TTL = 5 * 60_000;
 const EVENT_FETCH_CONCURRENCY = 6;
-const CLICK_MOVE_TOLERANCE = 5;
 
 let menuCommandId;
 let observer;
@@ -41,10 +40,7 @@ let parcelDataPromise;
 let parcelDataFetchedAt = 0;
 let parcelInfoByTracking = new Map();
 let rowOrderCounter = 0;
-const rowPositions = new WeakMap();
 const rowOrders = new WeakMap();
-const rowPointerState = new WeakMap();
-const collapsedSections = new Set();
 
 export function applyEnhancedParcels() {
   GM_addStyle(enhancedParcelsCss);
@@ -79,7 +75,6 @@ function setEnabled(value) {
   registerMenuCommand();
 
   if (!value && isParcelsPath()) {
-    restoreRows();
     location.reload();
     return;
   }
@@ -93,10 +88,7 @@ function updateEnhancedParcels() {
   document.documentElement.classList.toggle(ROOT_CLASS, active);
   document.body?.classList.toggle(ROOT_CLASS, active);
 
-  if (!active) {
-    restoreRows();
-    return;
-  }
+  if (!active) return;
 
   localStorage.setItem(FILTER_STORAGE_KEY, 'false');
   removeTakeoutStatusFilter();
@@ -158,6 +150,7 @@ function enhanceParcelsDom() {
   enhanceTabsAndPanel();
   enhanceLocations();
   enhanceRows();
+  enhanceParcelDetails();
 }
 
 function enhanceChrome() {
@@ -238,7 +231,6 @@ function enhanceRows() {
 
   for (const row of rows) {
     add(row, 'row');
-    bindRowInteraction(row);
     row.classList.toggle(HIDDEN_CLASS, isTakeoutRow(row));
     if (row.classList.contains(HIDDEN_CLASS)) continue;
 
@@ -275,10 +267,10 @@ function enhanceRows() {
   const visibleRows = rows.filter((row) => !row.classList.contains(HIDDEN_CLASS));
 
   inferMissingOrigins(visibleRows);
+  sortRowsInPlace(visibleRows);
 
   hideEmptyGroups();
   hideEmptyFlights();
-  flattenRows(visibleRows);
 }
 
 function enhanceInfo(info, row, side) {
@@ -358,74 +350,95 @@ function hidePaidItemCost(meta) {
   }
 }
 
-function bindRowInteraction(row) {
-  if (row.getAttribute(ROW_INTERACTION_ATTRIBUTE)) return;
+function enhanceParcelDetails() {
+  const currentUserNames = getCurrentUserNames();
 
-  row.setAttribute(ROW_INTERACTION_ATTRIBUTE, 'true');
-  row.addEventListener('pointerdown', (event) => recordRowPointerDown(row, event), true);
-  row.addEventListener('pointerup', (event) => restoreRowBeforeClick(row, event), true);
-  row.addEventListener('click', (event) => handleRowClick(row, event), true);
-}
+  for (const label of findAllByText(document, USER_DETAIL_LABEL_RE)) {
+    const labelText = normalizeText(label.textContent || '').replace(/:$/, '');
+    const field = getDetailField(label, labelText);
+    const value = getDetailFieldValue(label, field, labelText);
+    const redundant = isRedundantUserValue(value, currentUserNames);
 
-function recordRowPointerDown(row, event) {
-  if (event.button !== 0) return;
-
-  rowPointerState.set(row, {
-    x: event.clientX,
-    y: event.clientY,
-  });
-}
-
-function restoreRowBeforeClick(row, event) {
-  const state = rowPointerState.get(row);
-  if (!state) return;
-
-  state.moved = Math.hypot(event.clientX - state.x, event.clientY - state.y) > CLICK_MOVE_TOLERANCE;
-  state.selected = hasSelectionIn(row);
-  if (state.moved || state.selected) return;
-
-  restoreRowForNativeClick(row);
-}
-
-function handleRowClick(row, event) {
-  const state = rowPointerState.get(row);
-  rowPointerState.delete(row);
-
-  if (state?.moved || state?.selected || hasSelectionIn(row)) {
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    return;
-  }
-
-  if (row.getAttribute(ROW_RESTORED_ATTRIBUTE)) {
-    row.removeAttribute(ROW_RESTORED_ATTRIBUTE);
-    setTimeout(scheduleEnhance);
+    if (field && redundant) {
+      field.classList.add(HIDDEN_CLASS);
+      field.setAttribute(DETAIL_USER_FIELD_ATTRIBUTE, 'true');
+    } else if (field?.getAttribute(DETAIL_USER_FIELD_ATTRIBUTE)) {
+      field.classList.remove(HIDDEN_CLASS);
+      field.removeAttribute(DETAIL_USER_FIELD_ATTRIBUTE);
+    }
   }
 }
 
-function restoreRowForNativeClick(row) {
-  const list = document.querySelector(`.${FLAT_LIST_CLASS}`);
-  const position = rowPositions.get(row);
-  if (!list?.contains(row) || !position?.parent?.isConnected) return;
+function getDetailField(label, labelText) {
+  const parcelRow = label.closest(ROW_SELECTOR);
+  let field = label.parentElement;
 
-  const nextSibling =
-    position.nextSibling?.parentElement === position.parent ? position.nextSibling : null;
-  position.parent.insertBefore(row, nextSibling);
-  row.setAttribute(ROW_RESTORED_ATTRIBUTE, 'true');
-  revealRowAncestorsForClick(row);
-}
-
-function revealRowAncestorsForClick(row) {
-  for (const selector of [GROUP_SELECTOR, '.inex-enhanced-parcels__flight']) {
-    row.closest(selector)?.classList.remove(HIDDEN_CLASS);
+  while (field && field !== document.body && field !== parcelRow) {
+    const text = normalizeText(field.textContent || '');
+    const value = getValueAfterLabel(text, labelText);
+    if (value && text.length <= 180) return field;
+    field = field.parentElement;
   }
+
+  return null;
 }
 
-function hasSelectionIn(row) {
-  const selection = window.getSelection?.();
-  if (!selection || selection.isCollapsed || !selection.toString().trim()) return false;
+function getDetailFieldValue(label, field, labelText) {
+  const siblingValue = normalizeText(label.nextElementSibling?.textContent || '');
+  if (siblingValue) return siblingValue;
 
-  return row.contains(selection.anchorNode) || row.contains(selection.focusNode);
+  if (normalizeText(label.parentElement?.textContent || '').replace(/:$/, '') === labelText) {
+    const parentSiblingValue = normalizeText(
+      label.parentElement?.nextElementSibling?.textContent || '',
+    );
+    if (parentSiblingValue) return parentSiblingValue;
+  }
+
+  return getValueAfterLabel(normalizeText(field?.textContent || ''), labelText);
+}
+
+function getValueAfterLabel(text, label) {
+  const index = text.toLowerCase().indexOf(label.toLowerCase());
+  if (index < 0) return '';
+
+  return normalizeText(text.slice(index + label.length).replace(/^\s*[:：-]\s*/, ''));
+}
+
+function isRedundantUserValue(value, currentUserNames) {
+  const text = normalizeText(value);
+  if (!text) return false;
+  if (SYSTEM_USER_RE.test(text)) return true;
+  return currentUserNames.has(normalizePersonName(text));
+}
+
+function getCurrentUserNames() {
+  const names = new Set();
+
+  for (const account of findAllByText(document, /^IG\d+$/)) {
+    addCurrentUserName(names, account.previousElementSibling?.textContent);
+
+    const accountId = normalizeText(account.textContent || '');
+    const accountText = normalizeText(account.parentElement?.textContent || '').replace(
+      accountId,
+      '',
+    );
+    addCurrentUserName(names, accountText);
+  }
+
+  return names;
+}
+
+function addCurrentUserName(names, value) {
+  const name = normalizePersonName(value || '');
+  if (name) names.add(name);
+}
+
+function normalizePersonName(value) {
+  return normalizeText(value)
+    .replace(/\bIG\d+\b/gi, '')
+    .replace(/[^\w\u10a0-\u10ff]+/g, ' ')
+    .toLowerCase()
+    .trim();
 }
 
 function hideEmptyGroups() {
@@ -448,175 +461,30 @@ function hideEmptyFlights() {
   }
 }
 
-function flattenRows(rows) {
-  if (!rows.length) {
-    restoreRows();
-    return;
-  }
-
-  const list = getFlatList();
-  if (!list) return;
-
-  const sortedRows = [...rows].sort(compareRows);
-  const nextChildren = getFlatListChildren(list, sortedRows);
-  const currentChildren = [...list.children];
-  const nextChildSet = new Set(nextChildren);
-  const isSorted =
-    currentChildren.length === nextChildren.length &&
-    nextChildren.every((child, index) => currentChildren[index] === child);
-
-  if (!isSorted) {
-    for (const child of currentChildren) {
-      if (nextChildSet.has(child)) continue;
-
-      if (child.matches?.(ROW_SELECTOR)) {
-        restoreRow(child);
-      } else {
-        child.remove();
-      }
-    }
-
-    for (const child of nextChildren) {
-      if (child.matches?.(ROW_SELECTOR)) rememberRowPosition(child);
-      list.append(child);
-    }
-  }
-
-  for (const flight of document.querySelectorAll('.inex-enhanced-parcels__flight')) {
-    flight.classList.add(HIDDEN_CLASS);
-  }
-  for (const group of document.querySelectorAll(GROUP_SELECTOR)) {
-    group.classList.add(HIDDEN_CLASS);
-  }
-}
-
-function getFlatListChildren(list, rows) {
-  const sections = [
-    { type: 'arrived', label: 'Arrived', rows: [] },
-    { type: 'active', label: 'In progress', rows: [] },
-  ];
+function sortRowsInPlace(rows) {
+  const rowsByParent = new Map();
 
   for (const row of rows) {
-    if (getRowSortInfo(row).arrived) {
-      sections[0].rows.push(row);
-    } else {
-      sections[1].rows.push(row);
-    }
+    if (!row.parentElement) continue;
+
+    const siblings = rowsByParent.get(row.parentElement) || [];
+    siblings.push(row);
+    rowsByParent.set(row.parentElement, siblings);
   }
 
-  const visibleSections = sections.filter((section) => section.rows.length);
-  removeUnusedSectionDividers(
-    list,
-    visibleSections.map((section) => section.type),
-  );
+  for (const siblings of rowsByParent.values()) {
+    const sorted = [...siblings].sort(compareRows);
+    if (sorted.every((row, index) => row === siblings[index])) continue;
 
-  const children = [];
-  for (const section of visibleSections) {
-    const collapsed = collapsedSections.has(section.type);
-    children.push(
-      getSectionDivider(list, section.type, section.label, section.rows.length, collapsed),
-    );
-    for (const row of section.rows) {
-      row.classList.toggle(SECTION_COLLAPSED_CLASS, collapsed);
-      children.push(row);
-    }
+    for (const row of sorted) row.parentElement?.append(row);
   }
-
-  return children;
-}
-
-function getSectionDivider(list, type, label, count, collapsed) {
-  let divider = list.querySelector(`:scope > .${SECTION_CLASS}[data-section="${type}"]`);
-
-  if (!divider) {
-    divider = document.createElement('div');
-    divider.className = SECTION_CLASS;
-    divider.dataset.section = type;
-    divider.tabIndex = 0;
-    divider.setAttribute('role', 'button');
-    divider.addEventListener('click', () => toggleSection(type));
-    divider.addEventListener('keydown', (event) => {
-      if (![' ', 'Enter'].includes(event.key)) return;
-
-      event.preventDefault();
-      toggleSection(type);
-    });
-  }
-
-  divider.textContent = `${label} · ${count}`;
-  divider.setAttribute('aria-expanded', String(!collapsed));
-  return divider;
-}
-
-function removeUnusedSectionDividers(list, types) {
-  for (const divider of list.querySelectorAll(`:scope > .${SECTION_CLASS}`)) {
-    if (!types.includes(divider.dataset.section)) divider.remove();
-  }
-}
-
-function toggleSection(type) {
-  if (collapsedSections.has(type)) {
-    collapsedSections.delete(type);
-  } else {
-    collapsedSections.add(type);
-  }
-
-  const list = document.querySelector(`.${FLAT_LIST_CLASS}`);
-  if (list) flattenRows([...list.querySelectorAll(ROW_SELECTOR)]);
-}
-
-function getFlatList() {
-  const panel = document.querySelector('.inex-enhanced-parcels__panel');
-  if (!panel) return null;
-
-  let list = panel.querySelector(`:scope > .${FLAT_LIST_CLASS}`);
-  if (list) return list;
-
-  list = document.createElement('div');
-  list.className = FLAT_LIST_CLASS;
-  const header = panel.querySelector(':scope > .inex-enhanced-parcels__panel-header');
-  if (header) {
-    header.after(list);
-  } else {
-    panel.prepend(list);
-  }
-  return list;
-}
-
-function rememberRowPosition(row) {
-  if (rowPositions.has(row)) return;
-
-  rowPositions.set(row, {
-    parent: row.parentElement,
-    nextSibling: row.nextSibling,
-  });
-}
-
-function restoreRows() {
-  const list = document.querySelector(`.${FLAT_LIST_CLASS}`);
-  if (!list) return;
-
-  for (const row of [...list.querySelectorAll(ROW_SELECTOR)]) {
-    restoreRow(row);
-  }
-
-  list.remove();
-}
-
-function restoreRow(row) {
-  const position = rowPositions.get(row);
-  if (!position?.parent?.isConnected) return;
-
-  const nextSibling =
-    position.nextSibling?.parentElement === position.parent ? position.nextSibling : null;
-  position.parent.insertBefore(row, nextSibling);
 }
 
 function compareRows(a, b) {
   const sortA = getRowSortInfo(a);
   const sortB = getRowSortInfo(b);
 
-  const bucketDiff = sortA.bucket - sortB.bucket;
+  const bucketDiff = getRowBucket(sortA) - getRowBucket(sortB);
   if (bucketDiff) return bucketDiff;
 
   if (sortA.arrived && sortB.arrived) return getRowOrder(a) - getRowOrder(b);
@@ -630,6 +498,11 @@ function compareRows(a, b) {
   return getRowOrder(a) - getRowOrder(b);
 }
 
+function getRowBucket(sortInfo) {
+  if (sortInfo.arrived) return 0;
+  return sortInfo.eventCount > 0 ? 1 : 2;
+}
+
 function getRowSortInfo(row) {
   const info = getRowParcelInfo(row);
   const status = row.querySelector('.inex-enhanced-parcels__status');
@@ -640,7 +513,6 @@ function getRowSortInfo(row) {
     info,
     arrived,
     eventCount,
-    bucket: arrived ? 0 : eventCount > 0 ? 1 : 2,
   };
 }
 

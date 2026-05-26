@@ -67,4 +67,7 @@ export default defineConfig({
     minify: 'oxc',
     cssMinify: true,
   },
+  optimizeDeps: {
+    exclude: ['vite-plugin-monkey/dist/client'],
+  },
 });

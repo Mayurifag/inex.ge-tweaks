@@ -6,9 +6,10 @@
     },
     "agent-browser": {
       "type": "local",
-      "command": ["npx", "-y", "agent-browser-mcp"],
+      "command": ["/opt/homebrew/bin/npx", "-y", "agent-browser-mcp"],
       "enabled": true,
       "env": {
+        "AGENT_BROWSER_PATH": "/opt/homebrew/bin/agent-browser",
         "AGENT_BROWSER_EXECUTABLE_PATH": "/Applications/Helium.app/Contents/MacOS/Helium",
         "AGENT_BROWSER_PROFILE": "/Users/mayurifag/Code/inex.ge-tweaks/browser-data",
         "AGENT_BROWSER_HEADED": "true",

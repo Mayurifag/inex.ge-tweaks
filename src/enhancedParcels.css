@@ -63,59 +63,6 @@ html.inex-enhanced-parcels .inex-enhanced-parcels__panel-header {
   min-height: 0 !important;
 }
 
-html.inex-enhanced-parcels .inex-enhanced-parcels__flat-list {
-  display: flex !important;
-  flex-direction: column !important;
-  gap: 5px !important;
-}
-
-html.inex-enhanced-parcels .inex-enhanced-parcels__section {
-  display: flex !important;
-  align-items: center !important;
-  gap: 10px !important;
-  min-height: 24px !important;
-  margin: 9px 4px 2px !important;
-  padding: 4px 6px !important;
-  border-radius: 7px !important;
-  color: var(--inex-muted, currentcolor) !important;
-  cursor: pointer;
-  font-size: 11px !important;
-  font-weight: 500 !important;
-  line-height: 1 !important;
-  letter-spacing: 0.08em !important;
-  text-transform: uppercase !important;
-  user-select: none;
-}
-
-html.inex-enhanced-parcels .inex-enhanced-parcels__section:hover {
-  background: var(--inex-op-primary-light, transparent) !important;
-}
-
-html.inex-enhanced-parcels .inex-enhanced-parcels__section::before {
-  content: '-';
-  display: inline-grid;
-  place-items: center;
-  width: 14px;
-  height: 14px;
-  border: 1px solid currentcolor;
-  border-radius: 999px;
-  font-size: 12px;
-  line-height: 1;
-  opacity: 0.8;
-}
-
-html.inex-enhanced-parcels .inex-enhanced-parcels__section[aria-expanded='false']::before {
-  content: '+';
-}
-
-html.inex-enhanced-parcels .inex-enhanced-parcels__section::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--inex-border, currentcolor);
-  opacity: 0.75;
-}
-
 html.inex-enhanced-parcels .inex-enhanced-parcels__account-shell {
   background: var(--inex-transparent, transparent) !important;
   box-shadow: none !important;
@@ -188,10 +135,6 @@ html.inex-enhanced-parcels .inex-enhanced-parcels__row * {
 
 html.inex-enhanced-parcels .inex-enhanced-parcels__row--pending {
   opacity: 0.78;
-}
-
-html.inex-enhanced-parcels .inex-enhanced-parcels__row--section-collapsed {
-  display: none !important;
 }
 
 html.inex-enhanced-parcels .inex-enhanced-parcels__row-info {
