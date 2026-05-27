@@ -35,6 +35,7 @@ const GROUP_SELECTOR = 'div[class*="mt-2"][class*="px-2.5"]';
 const API_BASE = 'https://inex.ge/api/v1';
 const DATA_TTL = 5 * 60_000;
 const EVENT_FETCH_CONCURRENCY = 6;
+const OBSERVED_ATTRIBUTES = ['class', 'style', 'disabled', 'aria-disabled', 'data-state', 'hidden'];
 
 let menuCommandId;
 let observer;
@@ -135,8 +136,67 @@ function patchHistory() {
 function observeDom() {
   if (observer || !document.body) return;
 
-  observer = new MutationObserver(() => scheduleEnhance());
-  observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+  observer = new MutationObserver((mutations) => {
+    if (mutations.every(isOwnAttributeMutation)) return;
+
+    scheduleEnhance();
+  });
+  observer.observe(document.body, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+    attributes: true,
+    attributeOldValue: true,
+    attributeFilter: OBSERVED_ATTRIBUTES,
+  });
+}
+
+function isOwnAttributeMutation(mutation) {
+  if (mutation.type !== 'attributes' || !(mutation.target instanceof Element)) return false;
+
+  if (mutation.attributeName === 'class') {
+    return areClassListsEqualWithoutOwn(mutation.oldValue, mutation.target.getAttribute('class'));
+  }
+
+  if (mutation.attributeName === 'style') {
+    return (
+      normalizeStyleWithoutOrder(mutation.oldValue) ===
+      normalizeStyleWithoutOrder(mutation.target.getAttribute('style'))
+    );
+  }
+
+  return false;
+}
+
+function areClassListsEqualWithoutOwn(a, b) {
+  const classesA = getExternalClassList(a);
+  const classesB = getExternalClassList(b);
+  if (classesA.length !== classesB.length) return false;
+  return classesA.every((className, index) => className === classesB[index]);
+}
+
+function getExternalClassList(value) {
+  return (value || '')
+    .split(/\s+/)
+    .filter((className) => className && !className.startsWith('inex-enhanced-'))
+    .sort();
+}
+
+function normalizeStyleWithoutOrder(value) {
+  const element = document.createElement('div');
+  const styles = [];
+
+  element.setAttribute('style', value || '');
+  for (let index = 0; index < element.style.length; index++) {
+    const property = element.style.item(index);
+    if (property === 'order') continue;
+
+    styles.push(
+      `${property}:${element.style.getPropertyValue(property)}:${element.style.getPropertyPriority(property)}`,
+    );
+  }
+
+  return styles.sort().join(';');
 }
 
 function scheduleEnhance() {
