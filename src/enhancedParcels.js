@@ -566,7 +566,7 @@ function getSectionDivider(parent, type, label, count, collapsed) {
     parent.append(divider);
   }
 
-  divider.textContent = `${label} · ${count}`;
+  setTextContent(divider, `${label} · ${count}`);
   divider.setAttribute('aria-expanded', String(!collapsed));
   return divider;
 }
@@ -662,7 +662,7 @@ function updateProcessLine(statusCell, status, info, arrived) {
     status?.after(process);
   }
 
-  process.textContent = info.processText;
+  setTextContent(process, info.processText);
 }
 
 function ensureSideCell(row) {
@@ -749,7 +749,7 @@ function updateOriginIndicator(tracking, origin) {
     tracking.before(indicator);
   }
 
-  indicator.textContent = getOriginLabel(origin);
+  setTextContent(indicator, getOriginLabel(origin));
   indicator.title = getOriginTooltip(origin);
   indicator.dataset.tooltip = getOriginTooltip(origin);
   indicator.dataset.transport = origin.transportType || '';
@@ -923,6 +923,10 @@ function findAllByText(root, pattern) {
 function add(element, name) {
   element?.classList.add(`inex-enhanced-parcels__${name}`);
   return element;
+}
+
+function setTextContent(element, value) {
+  if (element.textContent !== value) element.textContent = value;
 }
 
 function areAllChildrenHidden(element) {
