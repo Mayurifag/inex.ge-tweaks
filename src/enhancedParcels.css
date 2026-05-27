@@ -38,20 +38,9 @@ html.inex-enhanced-parcels .inex-enhanced-parcels__scroll {
   scrollbar-width: none;
 }
 
-html.inex-enhanced-parcels .inex-enhanced-parcels__scroll:hover,
-html.inex-enhanced-parcels .inex-enhanced-parcels__scroll:focus-within {
-  scrollbar-width: thin;
-}
-
 html.inex-enhanced-parcels .inex-enhanced-parcels__scroll::-webkit-scrollbar {
   width: 0;
   height: 0;
-}
-
-html.inex-enhanced-parcels .inex-enhanced-parcels__scroll:hover::-webkit-scrollbar,
-html.inex-enhanced-parcels .inex-enhanced-parcels__scroll:focus-within::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
 }
 
 html.inex-enhanced-parcels .inex-enhanced-parcels__panel {

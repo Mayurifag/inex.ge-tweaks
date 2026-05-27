@@ -11,3 +11,4 @@
 - Keep `optimizeDeps.exclude: ['vite-plugin-monkey/dist/client']`; dev install can break if Vite prebundles the monkey client.
 - `secrets.txt` is git-crypt encrypted and uses `email=...` / `password=...`.
 - Do not add Playwright MCP artifacts or old selectors/features unless verified against the redesigned site.
+- Use GitHub `/raw/refs/heads/dist/` URLs for public userscript/UserCSS install and update URLs; `raw.githubusercontent.com` caching can delay update detection.

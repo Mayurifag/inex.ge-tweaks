@@ -3,9 +3,9 @@ import { readFileSync } from 'node:fs';
 const js = readFileSync('dist/inex.ge-tweaks.user.js', 'utf8');
 const css = readFileSync('dist/dark.user.css', 'utf8');
 const userscriptUrl =
-  'https://raw.githubusercontent.com/Mayurifag/inex.ge-tweaks/dist/inex.ge-tweaks.user.js';
+  'https://github.com/Mayurifag/inex.ge-tweaks/raw/refs/heads/dist/inex.ge-tweaks.user.js';
 const userstyleUrl =
-  'https://raw.githubusercontent.com/Mayurifag/inex.ge-tweaks/dist/dark.user.css';
+  'https://github.com/Mayurifag/inex.ge-tweaks/raw/refs/heads/dist/dark.user.css';
 
 const checks = [
   [/^\/\/ @name\s+inex\.ge tweaks$/m.test(js), 'userscript name is missing from build'],
