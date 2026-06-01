@@ -9,7 +9,7 @@ import enhancedParcelsCss from './enhancedParcels.css?raw';
 
 const STORAGE_KEY = 'inex_enhanced_parcels_enabled';
 const FILTER_STORAGE_KEY = 'parcels_filter_open';
-const CACHE_STORAGE_KEY = 'inex_enhanced_parcels_data_v2';
+const CACHE_STORAGE_KEY = 'inex_enhanced_parcels_data_v3';
 const ROOT_CLASS = 'inex-enhanced-parcels';
 const HIDDEN_CLASS = 'inex-enhanced-hidden';
 const CONTENTS_CLASS = 'inex-enhanced-parcels__contents';
@@ -36,6 +36,9 @@ const API_BASE = 'https://inex.ge/api/v1';
 const DATA_TTL = 5 * 60_000;
 const EVENT_FETCH_CONCURRENCY = 6;
 const OBSERVED_ATTRIBUTES = ['class', 'style', 'disabled', 'aria-disabled', 'data-state', 'hidden'];
+const DECLARATION_MODAL_RE =
+  /add declaration|update declaration|upload invoice|ai declaration|by hand|დეკლარ|ინვოის|деклар|инвойс/i;
+const DECLARATION_DEBUG_PREFIX = '[inex declaration]';
 
 let menuCommandId;
 let observer;
@@ -46,11 +49,15 @@ let parcelInfoByTracking = new Map();
 let rowOrderCounter = 0;
 const rowOrders = new WeakMap();
 const collapsedSections = new Set();
+const movedElements = new Set();
+const originalPositions = new WeakMap();
+let declarationRestoreBound = false;
 
 export function applyEnhancedParcels() {
   GM_addStyle(enhancedParcelsCss);
   registerMenuCommand();
   patchHistory();
+  bindDeclarationDomRestore();
   updateEnhancedParcels();
   onReady(() => {
     observeDom();
@@ -213,8 +220,112 @@ function enhanceParcelsDom() {
   enhanceChrome();
   enhanceTabsAndPanel();
   enhanceLocations();
+
+  if (isDeclarationModalOpen()) {
+    restoreMovedParcelDom();
+    return;
+  }
+
   enhanceRows();
   enhanceParcelDetails();
+}
+
+function bindDeclarationDomRestore() {
+  if (declarationRestoreBound) return;
+
+  declarationRestoreBound = true;
+  document.addEventListener(
+    'click',
+    (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const control = target?.closest('button, a, [role="button"], [class*="cursor-pointer"]');
+      const text = normalizeText(control?.textContent || '');
+      if (/declaration|declare|დეკლარ|деклар/i.test(text)) {
+        debugDeclaration('restore before declaration open', getDeclarationDebugState(control));
+        restoreMovedParcelDom();
+      }
+    },
+    true,
+  );
+  document.addEventListener(
+    'submit',
+    (event) => {
+      if (
+        event.target instanceof Element &&
+        DECLARATION_MODAL_RE.test(event.target.textContent || '')
+      ) {
+        debugDeclaration(
+          'restore before declaration submit',
+          getDeclarationDebugState(event.target),
+        );
+        restoreMovedParcelDom();
+        setTimeout(
+          () =>
+            debugDeclaration(
+              'after declaration submit tick',
+              getDeclarationDebugState(event.target),
+            ),
+          1000,
+        );
+      }
+    },
+    true,
+  );
+}
+
+function isDeclarationModalOpen() {
+  return DECLARATION_MODAL_RE.test(document.getElementById('modal-root')?.textContent || '');
+}
+
+function rememberMovedElement(element) {
+  if (!element || originalPositions.has(element)) return;
+
+  originalPositions.set(element, {
+    parent: element.parentNode,
+    nextSibling: element.nextSibling,
+  });
+  movedElements.add(element);
+}
+
+function moveElement(element, parent) {
+  if (!element || !parent || element.parentElement === parent) return;
+
+  rememberMovedElement(element);
+  parent.append(element);
+}
+
+function restoreMovedParcelDom() {
+  let restored = 0;
+  for (const element of [...movedElements]) {
+    const position = originalPositions.get(element);
+    movedElements.delete(element);
+    originalPositions.delete(element);
+    if (!position?.parent?.isConnected || !element.isConnected) continue;
+
+    const nextSibling =
+      position.nextSibling?.parentNode === position.parent ? position.nextSibling : null;
+    if (element.parentNode !== position.parent || element.nextSibling !== nextSibling) {
+      position.parent.insertBefore(element, nextSibling);
+      restored++;
+    }
+  }
+
+  for (const element of document.querySelectorAll(
+    `.${SIDE_CLASS}, .${SECTION_CLASS}, .inex-enhanced-parcels__status-cell, .${ACTIONS_CLASS}`,
+  )) {
+    element.remove();
+  }
+  debugDeclaration('restore moved parcel dom', { restored, moved: movedElements.size });
+}
+
+function pruneMovedElements() {
+  for (const element of [...movedElements]) {
+    const position = originalPositions.get(element);
+    if (element.isConnected && position?.parent?.isConnected) continue;
+
+    movedElements.delete(element);
+    originalPositions.delete(element);
+  }
 }
 
 function enhanceChrome() {
@@ -291,6 +402,8 @@ function enhanceLocations() {
 }
 
 function enhanceRows() {
+  pruneMovedElements();
+
   const rows = [...document.querySelectorAll(ROW_SELECTOR)];
 
   for (const row of rows) {
@@ -746,7 +859,7 @@ function ensureStatusCell(side, status) {
     side.prepend(cell);
   }
 
-  if (status && status.parentElement !== cell) cell.append(status);
+  moveElement(status, cell);
   return cell;
 }
 
@@ -758,8 +871,8 @@ function ensureActionsCell(side, price, declaration) {
     side.append(actions);
   }
 
-  if (declaration && declaration.parentElement !== actions) actions.append(declaration);
-  if (price && price.parentElement !== actions) actions.append(price);
+  moveElement(declaration, actions);
+  moveElement(price, actions);
   return actions;
 }
 
@@ -798,7 +911,7 @@ function updateOriginIndicator(tracking, origin) {
   if (!line) return;
 
   let indicator = line.querySelector('.inex-enhanced-parcels__origin');
-  if (!origin?.countryName && !origin?.transportName) {
+  if (!hasOriginInfo(origin)) {
     indicator?.remove();
     return;
   }
@@ -809,10 +922,13 @@ function updateOriginIndicator(tracking, origin) {
     tracking.before(indicator);
   }
 
+  const transportType = getOriginTransportType(origin);
+
   setTextContent(indicator, getOriginLabel(origin));
   indicator.title = getOriginTooltip(origin);
   indicator.dataset.tooltip = getOriginTooltip(origin);
-  indicator.dataset.transport = origin.transportType || '';
+  indicator.dataset.country = origin.countryCode || '';
+  indicator.dataset.transport = transportType;
 }
 
 function inferMissingOrigins(rows) {
@@ -857,15 +973,87 @@ function storeOriginInfo(row, origin) {
 }
 
 function hasOriginInfo(origin) {
-  return Boolean(origin?.countryName || origin?.transportName);
+  return Boolean(
+    origin?.countryCode || origin?.countryName || origin?.transportName || origin?.transportType,
+  );
 }
 
 function getOriginLabel(origin) {
-  if (origin.countryCode) return origin.countryCode;
-  if (origin.countryName) return origin.countryName.slice(0, 2);
+  const flag = getCountryFlag(origin);
+  const transport = getTransportEmoji(getOriginTransportType(origin));
+  if (flag || transport) return [flag, transport].filter(Boolean).join(' ');
 
   const labels = { air: 'Air', road: 'Road', sea: 'Sea' };
-  return labels[origin.transportType] || origin.transportName || '';
+  return labels[getOriginTransportType(origin)] || origin.transportName || '';
+}
+
+function getTransportEmoji(transportType) {
+  const icons = { air: '✈️', road: '🚚', sea: '🚢' };
+  return icons[transportType] || '';
+}
+
+function getCountryFlag(origin) {
+  const code = getFlagCountryCode(origin?.countryCode || getCountryCodeByName(origin?.countryName));
+  if (!/^[A-Z]{2}$/.test(code)) return '';
+
+  return [...code]
+    .map((letter) => String.fromCodePoint(0x1f1e6 + letter.charCodeAt(0) - 65))
+    .join('');
+}
+
+function getFlagCountryCode(code) {
+  if (!code) return '';
+
+  const normalized = code.trim().toUpperCase();
+  return normalized === 'UK' ? 'GB' : normalized;
+}
+
+function getCountryCodeByName(countryName) {
+  const countries = {
+    USA: 'US',
+    'United States': 'US',
+    'United Kingdom': 'GB',
+    China: 'CN',
+    Turkey: 'TR',
+    Germany: 'DE',
+    Greece: 'GR',
+    Italy: 'IT',
+    Spain: 'ES',
+    Poland: 'PL',
+    Cyprus: 'CY',
+    Georgia: 'GE',
+  };
+
+  return countries[countryName] || '';
+}
+
+function getOriginTransportType(origin) {
+  const transportType = normalizeTransportType(origin?.transportType);
+  if (transportType) return transportType;
+
+  const transportName = origin?.transportName || '';
+  if (/air|flight|plane/i.test(transportName)) return 'air';
+  if (/road|ground|land|truck|car/i.test(transportName)) return 'road';
+  if (/sea|ocean|ship/i.test(transportName)) return 'sea';
+
+  return getDefaultTransportType(origin?.countryCode || origin?.countryName || '');
+}
+
+function normalizeTransportType(value) {
+  const types = { 1: 'air', 4: 'road', air: 'air', road: 'road', sea: 'sea' };
+  const key = String(value || '')
+    .trim()
+    .toLowerCase();
+  return types[key] || '';
+}
+
+function getDefaultTransportType(country) {
+  if (/^(?:CN|China|US|USA|United States|UK|GB|United Kingdom)$/i.test(country)) return 'air';
+  if (/^(?:TR|Turkey|DE|Germany|GR|Greece|IT|Italy|ES|Spain|PL|Poland|CY|Cyprus)$/i.test(country)) {
+    return 'road';
+  }
+
+  return '';
 }
 
 function getOriginTooltip(origin) {
@@ -922,6 +1110,44 @@ function matchesStatusText(element, pattern) {
 
 function normalizeText(text) {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+function getDeclarationDebugState(source) {
+  const row = source?.closest?.(ROW_SELECTOR);
+  return {
+    sourceText: normalizeText(source?.textContent || '').slice(0, 300),
+    modalOpen: isDeclarationModalOpen(),
+    movedElements: movedElements.size,
+    row: row ? getRowDebugInfo(row) : null,
+    visibleRows: [...document.querySelectorAll(ROW_SELECTOR)]
+      .filter((element) => element instanceof HTMLElement && element.offsetParent !== null)
+      .map(getRowDebugInfo),
+    modalText: normalizeText(document.getElementById('modal-root')?.textContent || '').slice(
+      0,
+      500,
+    ),
+  };
+}
+
+function getRowDebugInfo(row) {
+  return {
+    tracking: getDebugTracking(row),
+    status: normalizeText(getRowStatus(row)?.textContent || ''),
+    text: normalizeText(row.textContent || '').slice(0, 500),
+    origin: row.getAttribute(ORIGIN_ATTRIBUTE) || '',
+  };
+}
+
+function getDebugTracking(row) {
+  return (
+    row.querySelector(`[${TRACKING_CODE_ATTRIBUTE}]`)?.getAttribute(TRACKING_CODE_ATTRIBUTE) ||
+    normalizeText(row.textContent || '').match(/[A-Z0-9]{10,}/)?.[0] ||
+    ''
+  );
+}
+
+function debugDeclaration(message, data) {
+  console.debug(DECLARATION_DEBUG_PREFIX, message, data || '');
 }
 
 function isDescriptionNoise(text) {
@@ -1117,13 +1343,15 @@ function flattenParcels(list) {
         const locationOrigin = getOriginInfo(location);
         for (const customer of location.relationships?.customers?.data || []) {
           for (const parcel of customer.relationships?.parcels?.data || []) {
+            const parcelOrigin = getOriginInfo(parcel);
+
             parcels.push({
               id: parcel.id,
               status: Number(parcel.attributes?.status),
               tracking: parcel.relationships?.parcelTrackings?.data?.[0]?.attributes?.tracking,
               description: getParcelDescription(parcel.attributes),
               expectedArrival,
-              origin: mergeOriginInfo(locationOrigin, flightOrigin),
+              origin: mergeOriginInfo(parcelOrigin, locationOrigin, flightOrigin),
             });
           }
         }
@@ -1200,12 +1428,17 @@ function collectOriginValues(source, values) {
   for (const [key, value] of Object.entries(source)) {
     if (value == null || typeof value === 'object') continue;
     if (
-      /country|origin|from|warehouse|direction|transport|shipping|delivery|type|code|name/i.test(
+      !/country|origin|from|warehouse|direction|transport|shipping|delivery|type|code|name/i.test(
         key,
       )
     ) {
-      values.push(value);
+      continue;
     }
+    if (/^\d+$/.test(String(value).trim()) && !/direction|transport|shipping|delivery/i.test(key)) {
+      continue;
+    }
+
+    values.push(value);
   }
 }
 
@@ -1246,6 +1479,8 @@ function getTransportInfo(values) {
     ['air', 'Air', /air|flight|plane|avia|საჰაერო|авиа|самолет/i],
     ['road', 'Road', /road|ground|land|truck|car|სახმელეთო|авто|назем/i],
     ['sea', 'Sea', /sea|ocean|ship|საზღვაო|море|морск/i],
+    ['air', 'Air', /^1$/],
+    ['road', 'Road', /^4$/],
   ];
 
   for (const value of values) {

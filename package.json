@@ -1,6 +1,6 @@
 {
   "name": "inex.ge-tweaks",
-  "version": "0.1.3",
+  "version": "0.1.6",
   "private": true,
   "description": "Userscript tweaks for inex.ge.",
   "type": "module",

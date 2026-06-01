@@ -220,12 +220,12 @@ html.inex-enhanced-parcels .inex-enhanced-parcels__tracking-line {
 html.inex-enhanced-parcels .inex-enhanced-parcels__origin {
   position: relative;
   flex-shrink: 0;
-  min-width: 22px;
+  min-width: 34px;
   padding: 2px 5px;
   border: 1px solid var(--inex-border-soft, currentcolor);
   border-radius: 999px;
   color: var(--inex-muted, currentcolor) !important;
-  font-size: 9px !important;
+  font-size: 11px !important;
   line-height: 1 !important;
   text-align: center;
   text-transform: uppercase;

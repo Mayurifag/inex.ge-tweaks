@@ -2,7 +2,7 @@
 
 Userscript tweaks for `inex.ge`.
 
-Install with Violentmonkey: [inex.ge-tweaks.user.js](https://github.com/Mayurifag/inex.ge-tweaks/raw/refs/heads/dist/inex.ge-tweaks.user.js)
+Install with Tampermonkey/Violentmonkey: [inex.ge-tweaks.user.js](https://github.com/Mayurifag/inex.ge-tweaks/raw/refs/heads/dist/inex.ge-tweaks.user.js)
 
 Install only the dark theme with Stylus: [dark.user.css](https://github.com/Mayurifag/inex.ge-tweaks/raw/refs/heads/dist/dark.user.css)
 

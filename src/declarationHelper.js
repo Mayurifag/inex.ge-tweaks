@@ -1,0 +1,526 @@
+const COUNTRY_DEFAULTS = {
+  CN: { currency: 'CNY', origin: 'taobao.com' },
+  US: { currency: 'USD', origin: 'amazon.com' },
+  UK: { currency: 'GBP' },
+  GB: { currency: 'GBP' },
+  TR: { currency: 'TRY' },
+  DE: { currency: 'EUR' },
+  GR: { currency: 'EUR' },
+  IT: { currency: 'EUR' },
+  ES: { currency: 'EUR' },
+  CY: { currency: 'EUR' },
+  PL: { currency: 'PLN' },
+  GE: { currency: 'GEL' },
+};
+
+const COUNTRY_PATTERNS = [
+  ['US', /(?:^|[^a-z])(?:us|usa)(?:$|[^a-z])|america|united states|აშშ|ამერიკა|сша|америк/i],
+  ['UK', /(?:^|[^a-z])(?:uk|gb)(?:$|[^a-z])|britain|united kingdom|დიდი ბრიტანეთი|британ/i],
+  ['CN', /(?:^|[^a-z])cn(?:$|[^a-z])|china|ჩინეთი|китай/i],
+  ['TR', /(?:^|[^a-z])tr(?:$|[^a-z])|turkey|თურქეთი|турци/i],
+  ['DE', /(?:^|[^a-z])de(?:$|[^a-z])|germany|გერმანია|герман/i],
+  ['GR', /(?:^|[^a-z])gr(?:$|[^a-z])|greece|საბერძნეთი|греци/i],
+  ['IT', /(?:^|[^a-z])it(?:$|[^a-z])|italy|იტალია|итали/i],
+  ['ES', /(?:^|[^a-z])es(?:$|[^a-z])|spain|ესპანეთი|испан/i],
+  ['PL', /(?:^|[^a-z])pl(?:$|[^a-z])|poland|პოლონეთი|польш/i],
+  ['CY', /(?:^|[^a-z])cy(?:$|[^a-z])|cyprus|კვიპროსი|кипр/i],
+  ['GE', /(?:^|[^a-z])ge(?:$|[^a-z])|georgia|საქართველო|грузи/i],
+];
+
+const CURRENCY_PATTERNS = {
+  CNY: /cny|yuan|renminbi|rmb|¥|იუან|юан|юань|ჩინ/i,
+  USD: /usd|dollar|\$|აშშ|американ/i,
+  EUR: /eur|euro|€/i,
+  GBP: /gbp|pound|£|sterling/i,
+  TRY: /try|lira|₺|ლირ|лир/i,
+  PLN: /pln|zloty|zł|ზლოტ|злот/i,
+  GEL: /gel|lari|₾|ლარ|лари/i,
+};
+
+const AI_DECLARATION_RE = /\bai\b.*declar|declar.*\bai\b|ai-declaration|ხელოვნურ|искусствен/i;
+const UPLOAD_INVOICE_RE =
+  /upload invoice|invoice upload|ატვირთეთ ინვოისი|ინვოისის ატვირთვა|загруз.*инвойс|загруз.*счет/i;
+const GENERATE_INVOICE_RE = /generate|გენერირება|დამუშავება|сгенер|обработ/i;
+const MANUAL_INVOICE_RE = /by hand|manual|manually|ხელით|ручн/i;
+const DECLARATION_FORM_RE =
+  /sender origin|origin site|total amount|item cost|quantity|category|currency|გამომგზავნ|ჯამური|რაოდენობა|კატეგორია|ვალუტა|ღირებულება|отправител|общая стоимость|колич|категор|валют|стоимость|цена/i;
+const DECLARATION_CLICK_RE = /declaration|declare|დეკლარ|деклар/i;
+const CATEGORY_RE = /category|კატეგორია|категор/i;
+const CURRENCY_RE = /currency|ვალუტა|валют/i;
+const QUANTITY_RE = /quantity|რაოდენობა|колич/i;
+const TOTAL_AMOUNT_RE = /order total amount|total amount|ჯამური|общая/i;
+const ITEM_COST_RE = /item cost|cost|ღირებულება|стоимость|цена/i;
+const SENDER_ORIGIN_RE = /sender origin|origin site|website|საიტი|გამომგზავნ|отправител|сайт/i;
+const OTHER_RE = /other|სხვა|გაურკვეველი|უცნობი|другое|прочее|неизвест/i;
+const REMEMBERED_COUNTRY_TTL = 10_000;
+const DEBUG_PREFIX = '[inex declaration]';
+
+let observer;
+let helperTimer;
+let lastCountryCode = '';
+let lastCountryRememberedAt = 0;
+let userInteractionBound = false;
+let activeDeclarationForm;
+let userInteractedWithActiveForm = false;
+let lastDeclarationFormInteractionAt = 0;
+const clickedManualButtons = new WeakSet();
+const defaultedFields = new WeakSet();
+const selectAttempts = new WeakMap();
+
+export function applyDeclarationHelper() {
+  bindDeclarationClicks();
+  bindDeclarationUserInteractions();
+  onReady(() => {
+    observeDeclarationDom();
+    scheduleDeclarationHelper();
+  });
+}
+
+function onReady(callback) {
+  if (document.body) {
+    callback();
+    return;
+  }
+
+  document.addEventListener('DOMContentLoaded', callback, { once: true });
+}
+
+function isParcelsPath() {
+  return /^\/(?:en|ka|ru)\/profile\/parcels\/?$/.test(window.location.pathname);
+}
+
+function observeDeclarationDom() {
+  if (observer || !document.body) return;
+
+  observer = new MutationObserver(scheduleDeclarationHelper);
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+  });
+}
+
+function scheduleDeclarationHelper() {
+  if (helperTimer) return;
+
+  helperTimer = setTimeout(() => {
+    helperTimer = undefined;
+    enhanceDeclarationSetup();
+  }, 50);
+}
+
+function bindDeclarationClicks() {
+  document.addEventListener(
+    'click',
+    (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const control = target?.closest('button, a, [role="button"], [class*="cursor-pointer"]');
+      if (!(control instanceof HTMLElement)) return;
+
+      const text = normalizeText(control.textContent || '');
+      if (isParcelsPath() && DECLARATION_CLICK_RE.test(text)) {
+        rememberCountryFrom(control);
+        scheduleDeclarationHelper();
+      }
+    },
+    true,
+  );
+}
+
+function enhanceDeclarationSetup() {
+  if (!isParcelsPath()) return;
+
+  const root = getDeclarationRoot();
+
+  hideAiDeclarationButtons(root);
+  clickManualInvoice(root);
+
+  const form = getDeclarationForm(root);
+  if (!form) return;
+  setActiveDeclarationForm(form);
+  if (shouldLeaveFormAlone()) {
+    debug('leave form alone after user input', getFormDebugInfo(form));
+    return;
+  }
+
+  const countryCode = detectCountryCode(form);
+  const defaults = COUNTRY_DEFAULTS[countryCode] || {};
+  debug('form detected', { countryCode, defaults, ...getFormDebugInfo(form) });
+
+  fillQuantityDefaults(form);
+  fillSenderOrigin(form, defaults.origin);
+  syncAmountFields(form);
+  defaultCustomSelect(
+    form,
+    CURRENCY_RE,
+    getCurrencyOptionPattern(defaults.currency),
+    defaults.currency,
+  );
+  defaultCustomSelect(form, CATEGORY_RE, OTHER_RE, 'other');
+}
+
+function bindDeclarationUserInteractions() {
+  if (userInteractionBound) return;
+
+  userInteractionBound = true;
+  document.addEventListener('pointerdown', markDeclarationUserInteraction, true);
+  document.addEventListener('keydown', markDeclarationUserInteraction, true);
+  document.addEventListener('input', markDeclarationUserInteraction, true);
+}
+
+function markDeclarationUserInteraction(event) {
+  if (event.isTrusted === false) return;
+
+  const target = event.target instanceof Element ? event.target : null;
+  const form = target?.closest('form');
+  if (!form) return;
+  if (!DECLARATION_FORM_RE.test(normalizeText(form.textContent || ''))) return;
+
+  activeDeclarationForm = form;
+  userInteractedWithActiveForm = true;
+  lastDeclarationFormInteractionAt = Date.now();
+}
+
+function setActiveDeclarationForm(form) {
+  if (form === activeDeclarationForm) return;
+
+  activeDeclarationForm = form;
+  userInteractedWithActiveForm = Date.now() - lastDeclarationFormInteractionAt < 5000;
+}
+
+function shouldLeaveFormAlone() {
+  return userInteractedWithActiveForm || Date.now() - lastDeclarationFormInteractionAt < 5000;
+}
+
+function getDeclarationRoot() {
+  const modalRoot = document.getElementById('modal-root');
+  if (modalRoot && normalizeText(modalRoot.textContent || '')) return modalRoot;
+
+  return document.body;
+}
+
+function hideAiDeclarationButtons(root) {
+  for (const button of getButtons(root)) {
+    if (!AI_DECLARATION_RE.test(normalizeText(button.textContent || ''))) continue;
+
+    button.style.setProperty('display', 'none', 'important');
+    button.setAttribute('aria-hidden', 'true');
+  }
+}
+
+function clickManualInvoice(root) {
+  const modalText = normalizeText(root.textContent || '');
+  const buttons = getButtons(root);
+  const hasInvoiceFlow =
+    UPLOAD_INVOICE_RE.test(modalText) ||
+    buttons.some((button) => {
+      const text = normalizeText(button.textContent || '');
+      return MANUAL_INVOICE_RE.test(text) || GENERATE_INVOICE_RE.test(text);
+    });
+  if (!hasInvoiceFlow || getDeclarationForm(root)) return;
+
+  for (const button of buttons) {
+    if (!GENERATE_INVOICE_RE.test(normalizeText(button.textContent || ''))) continue;
+
+    button.style.setProperty('display', 'none', 'important');
+    button.setAttribute('aria-hidden', 'true');
+  }
+
+  const manualButton = buttons.find(
+    (button) => MANUAL_INVOICE_RE.test(button.textContent || '') && isVisible(button),
+  );
+  if (manualButton && !clickedManualButtons.has(manualButton)) {
+    clickedManualButtons.add(manualButton);
+    debug('click manual invoice', { text: normalizeText(manualButton.textContent || '') });
+    manualButton.click();
+  }
+}
+
+function getDeclarationForm(root) {
+  return [...root.querySelectorAll('form')].find((form) =>
+    DECLARATION_FORM_RE.test(normalizeText(form.textContent || '')),
+  );
+}
+
+function fillQuantityDefaults(form) {
+  for (const input of getFieldsByLabel(form, QUANTITY_RE)) {
+    if (defaultedFields.has(input)) continue;
+
+    defaultedFields.add(input);
+    if (!isBlankOrZero(input)) continue;
+
+    debug('default quantity', getFieldDebugInfo(input));
+    setFieldValue(input, '1');
+  }
+}
+
+function fillSenderOrigin(form, origin) {
+  if (!origin) return;
+
+  const input = getFieldsByLabel(form, SENDER_ORIGIN_RE)[0];
+  if (!input || defaultedFields.has(input)) return;
+
+  defaultedFields.add(input);
+  if (getFieldValue(input)) return;
+
+  debug('default sender origin', { origin, ...getFieldDebugInfo(input) });
+  setFieldValue(input, origin);
+}
+
+function syncAmountFields(form) {
+  const total = getFieldsByLabel(form, TOTAL_AMOUNT_RE)[0];
+  const itemCost = getFieldsByLabel(form, ITEM_COST_RE)[0];
+  if (!total || !itemCost) return;
+
+  const totalValue = getFieldValue(total);
+  const itemCostValue = getFieldValue(itemCost);
+  if (totalValue && !itemCostValue) {
+    debug('sync item cost from total', { totalValue });
+    setFieldValue(itemCost, totalValue);
+  } else if (itemCostValue && !totalValue) {
+    debug('sync total from item cost', { itemCostValue });
+    setFieldValue(total, itemCostValue);
+  }
+}
+
+function defaultCustomSelect(form, labelPattern, optionPattern, debugValue) {
+  if (!optionPattern) return;
+
+  const select = findCustomSelect(form, labelPattern);
+  if (!select || shouldLeaveFormAlone()) return;
+
+  const input = select.querySelector('input');
+  const currentValue = getFieldValue(input);
+  const hasError = !!select.parentElement?.querySelector('[class*="text-error"]');
+  if (currentValue && optionPattern.test(currentValue) && !hasError) return;
+
+  const attempts = selectAttempts.get(select) || 0;
+  if (attempts >= 6) return;
+
+  selectAttempts.set(select, attempts + 1);
+  const trigger = select.firstElementChild;
+  if (!(trigger instanceof HTMLElement)) return;
+
+  debug('open select for default', { label: debugValue, attempts });
+  trigger.click();
+  setTimeout(() => clickSelectOption(select, optionPattern, debugValue), 120);
+}
+
+function clickSelectOption(select, optionPattern, debugValue) {
+  if (!select.isConnected || shouldLeaveFormAlone()) return;
+
+  const option = getVisibleSelectOption(optionPattern);
+  if (!option) {
+    scheduleDeclarationHelper();
+    return;
+  }
+
+  debug('select default option', { label: debugValue, option: getOptionText(option) });
+  option.click();
+}
+
+function findCustomSelect(form, labelPattern) {
+  return [...form.querySelectorAll('.custom-select')].find((select) =>
+    labelPattern.test(normalizeText(select.textContent || '')),
+  );
+}
+
+function getVisibleSelectOption(optionPattern) {
+  return [
+    ...document.querySelectorAll('button, [role="option"], [cmdk-item], [data-value], li, div'),
+  ]
+    .filter(isVisible)
+    .filter((element) => optionPattern.test(getOptionText(element)))
+    .sort((a, b) => getOptionText(a).length - getOptionText(b).length)[0];
+}
+
+function getOptionText(element) {
+  return normalizeText(
+    [element.textContent, element.getAttribute('data-value'), element.getAttribute('value')]
+      .filter(Boolean)
+      .join(' '),
+  );
+}
+
+function getCurrencyOptionPattern(currency) {
+  if (!currency) return null;
+
+  const knownPattern = CURRENCY_PATTERNS[currency];
+  return knownPattern
+    ? new RegExp(`^\\s*(?:${currency}|${knownPattern.source})\\s*$`, 'i')
+    : new RegExp(`^\\s*${currency}\\s*$`, 'i');
+}
+
+function getFieldsByLabel(root, labelPattern) {
+  const fields = new Set();
+
+  for (const field of root.querySelectorAll('input, textarea')) {
+    const text = getFieldContextText(field);
+    if (labelPattern.test(text)) fields.add(field);
+  }
+
+  return [...fields];
+}
+
+function getFieldContextText(field) {
+  const id = field.getAttribute('id');
+  const label = id ? field.ownerDocument.querySelector(`label[for="${cssEscape(id)}"]`) : null;
+  return normalizeText(
+    [
+      field.getAttribute('name'),
+      field.getAttribute('placeholder'),
+      field.getAttribute('aria-label'),
+      label?.textContent,
+      getNearestFieldContext(field),
+    ]
+      .filter(Boolean)
+      .join(' '),
+  );
+}
+
+function getNearestFieldContext(field) {
+  let current = field.parentElement;
+
+  while (current && current !== field.form && current !== document.body) {
+    const text = normalizeText(current.textContent || '');
+    const fieldCount = current.querySelectorAll('input, textarea, .custom-select').length;
+    if (text && fieldCount <= 1 && text.length <= 160) return text;
+    current = current.parentElement;
+  }
+
+  return '';
+}
+
+function setFieldValue(field, value) {
+  if (!(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)) return;
+
+  const prototype =
+    field instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+  if (setter) {
+    setter.call(field, value);
+  } else {
+    field.value = value;
+  }
+
+  field.dispatchEvent(new Event('input', { bubbles: true }));
+  field.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function getFieldValue(field) {
+  return field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement
+    ? normalizeText(field.value || '')
+    : '';
+}
+
+function isBlankOrZero(field) {
+  return /^\s*(?:0+)?\s*$/.test(getFieldValue(field));
+}
+
+function getButtons(root) {
+  return [...root.querySelectorAll('button, a, [role="button"]')].filter(
+    (button) => button instanceof HTMLElement,
+  );
+}
+
+function rememberCountryFrom(control) {
+  const row = control.closest('[data-inex-origin]');
+  const code = getCountryFromOriginAttribute(row) || getCountryFromText(row?.textContent || '');
+  lastCountryCode = code;
+  lastCountryRememberedAt = Date.now();
+  debug('declaration click', {
+    countryCode: code,
+    tracking: getRowTracking(row),
+    button: normalizeText(control.textContent || ''),
+  });
+}
+
+function detectCountryCode(form) {
+  return (
+    getRememberedCountryCode() ||
+    getCountryFromText(form.closest('[role="dialog"]')?.textContent || '') ||
+    getOnlyVisibleOriginCountry() ||
+    ''
+  );
+}
+
+function getRememberedCountryCode() {
+  return Date.now() - lastCountryRememberedAt <= REMEMBERED_COUNTRY_TTL ? lastCountryCode : '';
+}
+
+function getOnlyVisibleOriginCountry() {
+  const codes = new Set(
+    [...document.querySelectorAll('[data-inex-origin]')]
+      .filter(isVisible)
+      .map(
+        (element) =>
+          getCountryFromOriginAttribute(element) || getCountryFromText(element.textContent || ''),
+      )
+      .filter(Boolean),
+  );
+
+  return codes.size === 1 ? [...codes][0] : '';
+}
+
+function getCountryFromOriginAttribute(element) {
+  try {
+    const origin = JSON.parse(element?.getAttribute('data-inex-origin') || '{}');
+    return origin.countryCode || getCountryFromText(origin.countryName || '');
+  } catch {
+    return '';
+  }
+}
+
+function getCountryFromText(text) {
+  for (const [code, pattern] of COUNTRY_PATTERNS) {
+    if (pattern.test(text)) return code;
+  }
+
+  return '';
+}
+
+function isVisible(element) {
+  if (!(element instanceof HTMLElement)) return false;
+
+  const style = getComputedStyle(element);
+  const rect = element.getBoundingClientRect();
+  return (
+    style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0
+  );
+}
+
+function normalizeText(text) {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return CSS.escape(value);
+
+  return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+}
+
+function getFormDebugInfo(form) {
+  return {
+    fields: [...form.querySelectorAll('input, textarea')].map(getFieldDebugInfo),
+    text: normalizeText(form.textContent || '').slice(0, 500),
+  };
+}
+
+function getFieldDebugInfo(field) {
+  return {
+    name: field.getAttribute('name') || '',
+    type: field.getAttribute('type') || '',
+    placeholder: field.getAttribute('placeholder') || '',
+    value: getFieldValue(field),
+    context: getFieldContextText(field),
+  };
+}
+
+function getRowTracking(row) {
+  return normalizeText(row?.textContent || '').match(/[A-Z0-9]{10,}/)?.[0] || '';
+}
+
+function debug(message, data) {
+  console.debug(DEBUG_PREFIX, message, data || '');
+}
