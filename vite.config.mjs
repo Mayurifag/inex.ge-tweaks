@@ -43,7 +43,10 @@ export default defineConfig({
       enforce: 'pre',
       transform(code, id) {
         if (!id.endsWith('.css?raw') || id.includes('/src/dark.user.css?raw')) return null;
-        return { code: `export default ${JSON.stringify(minifyCss(rawCssModuleValue(code)))};`, map: null };
+        return {
+          code: `export default ${JSON.stringify(minifyCss(rawCssModuleValue(code)))};`,
+          map: null,
+        };
       },
     },
     monkey({
