@@ -61,6 +61,8 @@ let declarationFetchDebugBound = false;
 let declarationUiOpen = false;
 let declarationFormSeen = false;
 let replayingDeclarationClick = false;
+let lastDeclarationFormOpen = false;
+let lastDeclarationTarget = null;
 
 export function applyEnhancedParcels() {
   GM_addStyle(enhancedParcelsCss);
@@ -94,6 +96,7 @@ function bindDeclarationRowClicks() {
       const button = row && getRowDeclarationButton(row);
       if (!button) return;
 
+      rememberDeclarationTarget(row, 'row click routed to declaration button');
       event.preventDefault();
       event.stopImmediatePropagation();
       button.click();
@@ -126,6 +129,7 @@ function bindDeclarationFetchDebug() {
   if (declarationFetchDebugBound) return;
 
   declarationFetchDebugBound = true;
+  patchDeclarationXhrDebug();
   const nativeFetch = window.fetch;
   window.fetch = async (...args) => {
     const startedAt = performance.now();
@@ -159,6 +163,61 @@ function bindDeclarationFetchDebug() {
   };
 }
 
+function patchDeclarationXhrDebug() {
+  if (XMLHttpRequest.prototype.inexDeclarationDebugPatched) return;
+
+  XMLHttpRequest.prototype.inexDeclarationDebugPatched = true;
+  const nativeOpen = XMLHttpRequest.prototype.open;
+  const nativeSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function openWithDeclarationDebug(method, url, ...rest) {
+    this.inexDeclarationDebugInfo = {
+      method: String(method || 'GET').toUpperCase(),
+      url: getDebugUrl(url),
+      declarationFormOpen: isDeclarationFormOpen(),
+      declarationTarget: lastDeclarationTarget,
+    };
+    return nativeOpen.call(this, method, url, ...rest);
+  };
+
+  XMLHttpRequest.prototype.send = function sendWithDeclarationDebug(body) {
+    const startedAt = performance.now();
+    const info = {
+      ...(this.inexDeclarationDebugInfo || {}),
+      body: getRequestDebugBody(body),
+      declarationFormOpen: isDeclarationFormOpen(),
+      declarationTarget: lastDeclarationTarget,
+    };
+    const shouldDebug = shouldDebugDeclarationFetch(info);
+
+    if (shouldDebug) {
+      debugDeclaration('xhr start', info);
+      this.addEventListener('loadend', () => {
+        const ok = this.status >= 200 && this.status < 300;
+        debugDeclaration('xhr response', {
+          ...info,
+          ms: Math.round(performance.now() - startedAt),
+          status: this.status,
+          ok,
+          body: getXhrResponseDebugBody(this),
+        });
+        if (ok && isDeclarationSubmitUrl(info.url)) reloadParcelsAfterDeclaration(info);
+      });
+    }
+
+    return nativeSend.call(this, body);
+  };
+}
+
+function isDeclarationSubmitUrl(url) {
+  return /\/front\/cabinet\/parcels\/\d+\/declare$/.test(url);
+}
+
+function reloadParcelsAfterDeclaration(info) {
+  debugDeclaration('reload parcels after declaration success', info);
+  setTimeout(() => location.reload(), 100);
+}
+
 function getFetchDebugInfo(args) {
   const [resource, init = {}] = args;
   const request = resource instanceof Request ? resource : null;
@@ -169,6 +228,7 @@ function getFetchDebugInfo(args) {
     url: getDebugUrl(url),
     body: getRequestDebugBody(init.body),
     declarationFormOpen: isDeclarationFormOpen(),
+    declarationTarget: lastDeclarationTarget,
   };
 }
 
@@ -212,6 +272,17 @@ async function readResponseDebugBody(response) {
 
   try {
     return truncateDebugText(await response.clone().text());
+  } catch (error) {
+    return `[unreadable: ${error.message}]`;
+  }
+}
+
+function getXhrResponseDebugBody(xhr) {
+  const contentType = xhr.getResponseHeader('content-type') || '';
+  if (!/json|text|html/i.test(contentType)) return '';
+
+  try {
+    return typeof xhr.responseText === 'string' ? truncateDebugText(xhr.responseText) : '';
   } catch (error) {
     return `[unreadable: ${error.message}]`;
   }
@@ -386,6 +457,14 @@ function enhanceParcelsDom() {
   ensureParcelData();
 
   const declarationFormOpen = isDeclarationFormOpen();
+  if (declarationFormOpen !== lastDeclarationFormOpen) {
+    lastDeclarationFormOpen = declarationFormOpen;
+    debugDeclaration('declaration form visibility changed', {
+      open: declarationFormOpen,
+      ...getDeclarationDebugState(document.body),
+    });
+  }
+
   if (declarationFormOpen) {
     declarationFormSeen = true;
     return;
@@ -437,9 +516,10 @@ function bindDeclarationDomRestore() {
         event.target instanceof Element &&
         DECLARATION_MODAL_RE.test(event.target.textContent || '')
       ) {
+        const beforeRows = getVisibleRowDebugInfo();
         debugDeclaration(
           'restore before declaration submit',
-          getDeclarationDebugState(event.target),
+          getDeclarationSubmitDebugInfo(event, beforeRows),
         );
         restoreMovedParcelDom();
         declarationUiOpen = false;
@@ -447,10 +527,10 @@ function bindDeclarationDomRestore() {
         refreshParcelDataSoon();
         setTimeout(
           () =>
-            debugDeclaration(
-              'after declaration submit tick',
-              getDeclarationDebugState(event.target),
-            ),
+            debugDeclaration('after declaration submit tick', {
+              ...getDeclarationSubmitDebugInfo(event, beforeRows),
+              rowDiff: getRowsDebugDiff(beforeRows, getVisibleRowDebugInfo()),
+            }),
           1000,
         );
       }
@@ -461,13 +541,23 @@ function bindDeclarationDomRestore() {
 
 function openDeclarationFromRestoredRow(control) {
   const row = control?.closest(ROW_SELECTOR);
-  if (!row) return;
+  if (!row) {
+    debugDeclaration(
+      'declaration replay skipped: row not found',
+      getDeclarationDebugState(control),
+    );
+    return;
+  }
 
+  rememberDeclarationTarget(row, 'declaration target selected');
   debugDeclaration('restore before declaration replay', getDeclarationDebugState(control));
   restoreMovedParcelDom(row);
 
   const button = getRowDeclarationButton(row);
-  if (!button) return;
+  if (!button) {
+    debugDeclaration('declaration replay skipped: button not found', getDeclarationDebugState(row));
+    return;
+  }
 
   declarationUiOpen = true;
   replayingDeclarationClick = true;
@@ -544,6 +634,7 @@ function restoreMovedParcelDom(scope = document) {
 }
 
 function refreshParcelDataSoon() {
+  const beforeRows = getVisibleRowDebugInfo();
   setTimeout(() => {
     debugDeclaration('refresh parcel data after declaration submit');
     localStorage.removeItem(CACHE_STORAGE_KEY);
@@ -551,6 +642,15 @@ function refreshParcelDataSoon() {
     parcelDataFetchedAt = 0;
     ensureParcelData();
     scheduleEnhance();
+    setTimeout(
+      () =>
+        debugDeclaration('rows after parcel data refresh', {
+          declarationTarget: lastDeclarationTarget,
+          rowDiff: getRowsDebugDiff(beforeRows, getVisibleRowDebugInfo()),
+          rows: getVisibleRowDebugInfo(),
+        }),
+      1000,
+    );
   }, 1500);
 }
 
@@ -1408,14 +1508,83 @@ function getDeclarationDebugState(source) {
     declarationFormOpen: isDeclarationFormOpen(),
     movedElements: movedElements.size,
     row: row ? getRowDebugInfo(row) : null,
-    visibleRows: [...document.querySelectorAll(ROW_SELECTOR)]
-      .filter((element) => element instanceof HTMLElement && element.offsetParent !== null)
-      .map(getRowDebugInfo),
+    declarationTarget: lastDeclarationTarget,
+    visibleRows: getVisibleRowDebugInfo(),
     modalText: normalizeText(document.getElementById('modal-root')?.textContent || '').slice(
       0,
       500,
     ),
   };
+}
+
+function rememberDeclarationTarget(row, message) {
+  lastDeclarationTarget = row ? getRowDebugInfo(row) : null;
+  debugDeclaration(message, {
+    declarationTarget: lastDeclarationTarget,
+    visibleRows: getVisibleRowDebugInfo(),
+  });
+}
+
+function getDeclarationSubmitDebugInfo(event, beforeRows) {
+  const form = event.target;
+  return {
+    ...getDeclarationDebugState(form),
+    submitter: normalizeText(
+      event.submitter?.textContent || document.activeElement?.textContent || '',
+    ).slice(0, 200),
+    defaultPrevented: event.defaultPrevented,
+    fields: getFormFieldsDebugInfo(form),
+    beforeRows,
+  };
+}
+
+function getFormFieldsDebugInfo(form) {
+  return [...form.querySelectorAll('input, textarea, select')].map((field) => ({
+    name: field.getAttribute('name') || '',
+    type: field.getAttribute('type') || field.tagName.toLowerCase(),
+    value: field.type === 'file' ? getFileInputDebugValue(field) : field.value,
+    label: getFieldLabelDebugText(field),
+  }));
+}
+
+function getFileInputDebugValue(field) {
+  return [...(field.files || [])].map((file) => `${file.name}:${file.size}`).join(', ');
+}
+
+function getFieldLabelDebugText(field) {
+  const id = field.getAttribute('id');
+  const label = id ? document.querySelector(`label[for="${cssEscape(id)}"]`) : null;
+  return normalizeText(
+    [field.getAttribute('placeholder'), label?.textContent].filter(Boolean).join(' '),
+  );
+}
+
+function getVisibleRowDebugInfo() {
+  return [...document.querySelectorAll(ROW_SELECTOR)]
+    .filter((element) => element instanceof HTMLElement && element.offsetParent !== null)
+    .map(getRowDebugInfo);
+}
+
+function getRowsDebugDiff(beforeRows, afterRows) {
+  const beforeByTracking = new Map(beforeRows.map((row) => [row.tracking || row.text, row]));
+  return afterRows
+    .map((row) => {
+      const before = beforeByTracking.get(row.tracking || row.text);
+      if (!before) return { type: 'added', row };
+      if (JSON.stringify(before) === JSON.stringify(row)) return null;
+      return { type: 'changed', before, after: row };
+    })
+    .filter(Boolean)
+    .concat(
+      beforeRows
+        .filter(
+          (row) =>
+            !afterRows.some(
+              (after) => (after.tracking || after.text) === (row.tracking || row.text),
+            ),
+        )
+        .map((row) => ({ type: 'removed', row })),
+    );
 }
 
 function getRowDebugInfo(row) {
@@ -1437,6 +1606,12 @@ function getDebugTracking(row) {
 
 function debugDeclaration(message, data) {
   console.debug(DECLARATION_DEBUG_PREFIX, message, data || '');
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return CSS.escape(value);
+
+  return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
 }
 
 function isDescriptionNoise(text) {

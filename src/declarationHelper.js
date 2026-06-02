@@ -43,6 +43,8 @@ const AI_DECLARATION_RE = /\bai\b.*declar|declar.*\bai\b|ai-declaration|ხე�
 const UPLOAD_INVOICE_RE =
   /upload invoice|invoice upload|ატვირთეთ ინვოისი|ინვოისის ატვირთვა|загруз.*инвойс|загруз.*счет/i;
 const GENERATE_INVOICE_RE = /generate|გენერირება|დამუშავება|сгенер|обработ/i;
+const AI_INVOICE_FLOW_RE =
+  /\bai\b|ai declaration|processing invoice|process invoice|generate|ხელოვნურ|გენერირება|დამუშავება|искусствен|обработ|сгенер/i;
 const MANUAL_INVOICE_RE = /by hand|manual|manually|ხელით|ручн/i;
 const DECLARATION_FORM_RE =
   /sender origin|origin site|total amount|item cost|quantity|category|currency|გამომგზავნ|ჯამური|რაოდენობა|კატეგორია|ვალუტა|ღირებულება|отправител|общая стоимость|колич|категор|валют|стоимость|цена/i;
@@ -149,6 +151,14 @@ function bindDeclarationClicks() {
       if (!(control instanceof HTMLElement)) return;
 
       const text = normalizeText(control.textContent || '');
+      if (isParcelsPath() && AI_INVOICE_FLOW_RE.test(text) && !MANUAL_INVOICE_RE.test(text)) {
+        debug('blocked ai invoice flow click', { text });
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        hideAiDeclarationButtons(getDeclarationRoot());
+        return;
+      }
+
       if (isParcelsPath() && DECLARATION_CLICK_RE.test(text)) {
         rememberCountryFrom(control);
         scheduleDeclarationHelper();
@@ -357,10 +367,24 @@ function getDeclarationRoot() {
 
 function hideAiDeclarationButtons(root) {
   for (const button of getButtons(root)) {
-    if (!AI_DECLARATION_RE.test(normalizeText(button.textContent || ''))) continue;
+    const text = normalizeText(button.textContent || '');
+    if (!AI_DECLARATION_RE.test(text) && !AI_INVOICE_FLOW_RE.test(text)) continue;
+    if (MANUAL_INVOICE_RE.test(text)) continue;
 
-    button.style.setProperty('display', 'none', 'important');
-    button.setAttribute('aria-hidden', 'true');
+    debug('remove ai invoice control', { text });
+    button.remove();
+  }
+
+  for (const element of [...root.querySelectorAll('*')]) {
+    if (element.children.length || !(element instanceof HTMLElement)) continue;
+
+    const text = normalizeText(element.textContent || '');
+    if (!AI_DECLARATION_RE.test(text) && !AI_INVOICE_FLOW_RE.test(text)) continue;
+    if (MANUAL_INVOICE_RE.test(text)) continue;
+
+    debug('hide ai invoice text', { text });
+    element.style.setProperty('display', 'none', 'important');
+    element.setAttribute('aria-hidden', 'true');
   }
 }
 
@@ -485,19 +509,19 @@ function formatAmount(value) {
     .replace(/(\.\d)0$/, '$1');
 }
 
-function defaultCustomSelect(form, labelPattern, optionPattern, debugValue, force = false) {
+function defaultCustomSelect(form, labelPattern, optionPattern, debugValue) {
   if (!optionPattern) return;
 
   for (const select of findCustomSelects(form, labelPattern)) {
-    defaultSingleCustomSelect(select, optionPattern, debugValue, force);
+    defaultSingleCustomSelect(select, optionPattern, debugValue);
   }
 }
 
-function defaultSingleCustomSelect(select, optionPattern, debugValue, force) {
+function defaultSingleCustomSelect(select, optionPattern, debugValue) {
   const input = select.querySelector('input');
   const currentValue = getFieldValue(input);
   const hasError = !!select.parentElement?.querySelector('[class*="text-error"]');
-  if (!force && shouldLeaveFormAlone() && currentValue && !hasError) return;
+  if (shouldLeaveFormAlone()) return;
   if (currentValue && optionPattern.test(currentValue) && !hasError) return;
 
   const attempts = selectAttempts.get(select) || 0;
@@ -509,11 +533,11 @@ function defaultSingleCustomSelect(select, optionPattern, debugValue, force) {
 
   debug('open select for default', { label: debugValue, attempts });
   trigger.click();
-  setTimeout(() => clickSelectOption(select, optionPattern, debugValue, force), 120);
+  setTimeout(() => clickSelectOption(select, optionPattern, debugValue), 120);
 }
 
-function clickSelectOption(select, optionPattern, debugValue, force) {
-  if (!select.isConnected || (!force && shouldLeaveFormAlone())) return;
+function clickSelectOption(select, optionPattern, debugValue) {
+  if (!select.isConnected || shouldLeaveFormAlone()) return;
 
   const option = getVisibleSelectOption(optionPattern);
   if (!option) {
