@@ -9,7 +9,7 @@ import enhancedParcelsCss from './enhancedParcels.css?raw';
 
 const STORAGE_KEY = 'inex_enhanced_parcels_enabled';
 const FILTER_STORAGE_KEY = 'parcels_filter_open';
-const CACHE_STORAGE_KEY = 'inex_enhanced_parcels_data_v3';
+const CACHE_STORAGE_KEY = 'inex_enhanced_parcels_data_v4';
 const ROOT_CLASS = 'inex-enhanced-parcels';
 const HIDDEN_CLASS = 'inex-enhanced-hidden';
 const CONTENTS_CLASS = 'inex-enhanced-parcels__contents';
@@ -52,18 +52,71 @@ const collapsedSections = new Set();
 const movedElements = new Set();
 const originalPositions = new WeakMap();
 let declarationRestoreBound = false;
+let declarationRowClicksBound = false;
 
 export function applyEnhancedParcels() {
   GM_addStyle(enhancedParcelsCss);
   registerMenuCommand();
   patchHistory();
   bindDeclarationDomRestore();
+  bindDeclarationRowClicks();
+  bindDeclarationEscapeDismiss();
   updateEnhancedParcels();
   onReady(() => {
     observeDom();
     updateEnhancedParcels();
   });
   window.addEventListener('popstate', updateEnhancedParcels);
+}
+
+function bindDeclarationRowClicks() {
+  if (declarationRowClicksBound) return;
+
+  declarationRowClicksBound = true;
+  document.addEventListener(
+    'click',
+    (event) => {
+      if (!isParcelsPath() || isDeclarationFormOpen()) return;
+
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target || isInteractiveTarget(target)) return;
+
+      const row = target.closest(ROW_SELECTOR);
+      const button = row && getRowDeclarationButton(row);
+      if (!button) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      button.click();
+    },
+    true,
+  );
+}
+
+function bindDeclarationEscapeDismiss() {
+  document.addEventListener(
+    'keydown',
+    (event) => {
+      if (event.key !== 'Escape' || !isParcelsPath() || !isDeclarationFormOpen()) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      location.reload();
+    },
+    true,
+  );
+}
+
+function isInteractiveTarget(target) {
+  return !!target.closest(
+    'button, a, input, textarea, select, label, [role="button"], [role="link"], [contenteditable="true"]',
+  );
+}
+
+function getRowDeclarationButton(row) {
+  return [...row.querySelectorAll('button, [role="button"]')].find((button) =>
+    /declaration|declare|დეკლარ|деклар/i.test(normalizeText(button.textContent || '')),
+  );
 }
 
 function onReady(callback) {
@@ -221,7 +274,7 @@ function enhanceParcelsDom() {
   enhanceTabsAndPanel();
   enhanceLocations();
 
-  if (isDeclarationModalOpen()) {
+  if (isDeclarationFormOpen()) {
     restoreMovedParcelDom();
     return;
   }
@@ -259,6 +312,7 @@ function bindDeclarationDomRestore() {
           getDeclarationDebugState(event.target),
         );
         restoreMovedParcelDom();
+        refreshParcelDataSoon();
         setTimeout(
           () =>
             debugDeclaration(
@@ -273,8 +327,13 @@ function bindDeclarationDomRestore() {
   );
 }
 
-function isDeclarationModalOpen() {
-  return DECLARATION_MODAL_RE.test(document.getElementById('modal-root')?.textContent || '');
+function isDeclarationFormOpen() {
+  const modalText = document.getElementById('modal-root')?.textContent || '';
+  if (DECLARATION_MODAL_RE.test(modalText)) return true;
+
+  return [...document.querySelectorAll('form')].some((form) =>
+    DECLARATION_MODAL_RE.test(form.textContent || ''),
+  );
 }
 
 function rememberMovedElement(element) {
@@ -316,6 +375,16 @@ function restoreMovedParcelDom() {
     element.remove();
   }
   debugDeclaration('restore moved parcel dom', { restored, moved: movedElements.size });
+}
+
+function refreshParcelDataSoon() {
+  setTimeout(() => {
+    localStorage.removeItem(CACHE_STORAGE_KEY);
+    parcelInfoByTracking = new Map();
+    parcelDataFetchedAt = 0;
+    ensureParcelData();
+    scheduleEnhance();
+  }, 1500);
 }
 
 function pruneMovedElements() {
@@ -407,6 +476,7 @@ function enhanceRows() {
   const rows = [...document.querySelectorAll(ROW_SELECTOR)];
 
   for (const row of rows) {
+    restoreMisplacedRowInfo(row);
     add(row, 'row');
     row.classList.toggle(HIDDEN_CLASS, isTakeoutRow(row));
     if (row.classList.contains(HIDDEN_CLASS)) continue;
@@ -418,17 +488,17 @@ function enhanceRows() {
     );
     const info = add(children[0], 'row-info');
     const side = ensureSideCell(row);
-    const price = add(
-      side.querySelector('.inex-enhanced-parcels__price') || children.at(-1),
-      'price',
-    );
+    const price = add(getRowPriceElement(side) || getRowPriceElement(row), 'price');
+    const paid = getRowPaidElement(side) || getRowPaidElement(row) || children.find(isPaidElement);
     const declaration =
-      side.querySelector('.inex-enhanced-parcels__declaration') ||
+      getRowDeclarationElement(side) ||
+      getRowDeclarationElement(row) ||
       (children.length > 2 ? children[1] : null);
 
     add(declaration, 'declaration');
+    normalizeDeclarationControl(declaration);
     row.classList.toggle('inex-enhanced-parcels__row--declaration', !!declaration);
-    ensureActionsCell(side, price, declaration);
+    ensureActionsCell(side, price, declaration, paid);
     enhanceInfo(info, row, side);
     enhancePrice(price);
 
@@ -448,6 +518,14 @@ function enhanceRows() {
 
   hideEmptyGroups();
   hideEmptyFlights();
+}
+
+function restoreMisplacedRowInfo(row) {
+  const info = row.querySelector('.inex-enhanced-parcels__row-info');
+  if (!info || info.parentElement === row) return;
+
+  info.classList.remove('inex-enhanced-parcels__price', HIDDEN_CLASS);
+  row.prepend(info);
 }
 
 function enhanceInfo(info, row, side) {
@@ -479,12 +557,11 @@ function enhanceInfo(info, row, side) {
   }
 
   const description =
-    parcelInfo?.description || tracking?.getAttribute(DESCRIPTION_ATTRIBUTE) || '';
-  const origin = mergeOriginInfo(
-    parcelInfo?.origin,
-    getStoredOriginInfo(row),
-    getDomOriginInfo(row),
-  );
+    descriptionSource?.text ||
+    parcelInfo?.description ||
+    tracking?.getAttribute(DESCRIPTION_ATTRIBUTE) ||
+    '';
+  const origin = parcelInfo ? parcelInfo.origin : getStoredOriginInfo(row);
   const arrived = isArrivedRow(status);
 
   updateTrackingDisplay(tracking, trackingCode, description);
@@ -863,7 +940,7 @@ function ensureStatusCell(side, status) {
   return cell;
 }
 
-function ensureActionsCell(side, price, declaration) {
+function ensureActionsCell(side, price, declaration, paid) {
   let actions = side.querySelector(`:scope > .${ACTIONS_CLASS}`);
   if (!actions) {
     actions = document.createElement('span');
@@ -872,8 +949,50 @@ function ensureActionsCell(side, price, declaration) {
   }
 
   moveElement(declaration, actions);
+  moveElement(paid, actions);
   moveElement(price, actions);
   return actions;
+}
+
+function getRowDeclarationElement(root) {
+  return getRowActionCandidates(root).find((element) => getRowDeclarationButton(element));
+}
+
+function getRowPriceElement(root) {
+  return getRowActionCandidates(root).find((element) =>
+    [...element.querySelectorAll('button')].some((button) =>
+      /^\s*Pay\s*$/i.test(button.textContent || ''),
+    ),
+  );
+}
+
+function getRowPaidElement(root) {
+  return getRowActionCandidates(root).find(isPaidElement);
+}
+
+function isPaidElement(element) {
+  return /^(?:Paid|is paid|გადახდილია|оплачено)$/i.test(normalizeText(element?.textContent || ''));
+}
+
+function getRowActionCandidates(root) {
+  const actions = root?.querySelector(`:scope > .${ACTIONS_CLASS}`);
+  return [...(actions?.children || []), ...(root?.children || [])];
+}
+
+function normalizeDeclarationControl(declaration) {
+  if (!declaration) return;
+
+  declaration.classList.remove('inex-enhanced-parcels__price');
+  const button = getRowDeclarationButton(declaration);
+  if (!button) return;
+
+  for (const child of [...declaration.children]) {
+    if (child !== button) child.remove();
+  }
+
+  setTextContent(button.querySelector('span') || button, 'Needs Declaration');
+  button.setAttribute('aria-label', 'Needs Declaration');
+  button.title = 'Create declaration';
 }
 
 function getTrackingCode(tracking) {
@@ -933,10 +1052,11 @@ function updateOriginIndicator(tracking, origin) {
 
 function inferMissingOrigins(rows) {
   for (const row of rows) {
-    if (hasOriginInfo(getStoredOriginInfo(row))) continue;
+    const stored = getStoredOriginInfo(row);
+    if (hasOriginInfo(stored)) continue;
 
     const origin = getSiblingOriginInfo(row);
-    if (!hasOriginInfo(origin)) continue;
+    if (!origin.countryCode && !origin.countryName) continue;
 
     storeOriginInfo(row, origin);
     updateOriginIndicator(row.querySelector('.inex-enhanced-parcels__tracking'), origin);
@@ -951,8 +1071,8 @@ function getSiblingOriginInfo(row) {
   for (let distance = 1; distance < candidates.length; distance++) {
     const before = candidates[index - distance];
     const after = candidates[index + distance];
-    const origin = mergeOriginInfo(getStoredOriginInfo(before), getStoredOriginInfo(after));
-    if (hasOriginInfo(origin)) return origin;
+    const origin = mergeCountryInfo(getStoredOriginInfo(before), getStoredOriginInfo(after));
+    if (origin.countryCode || origin.countryName) return origin;
   }
 
   return {};
@@ -967,7 +1087,12 @@ function getStoredOriginInfo(row) {
 }
 
 function storeOriginInfo(row, origin) {
-  if (!row || !hasOriginInfo(origin)) return;
+  if (!row) return;
+
+  if (!hasOriginInfo(origin)) {
+    row.removeAttribute(ORIGIN_ATTRIBUTE);
+    return;
+  }
 
   row.setAttribute(ORIGIN_ATTRIBUTE, JSON.stringify(origin));
 }
@@ -1036,7 +1161,7 @@ function getOriginTransportType(origin) {
   if (/road|ground|land|truck|car/i.test(transportName)) return 'road';
   if (/sea|ocean|ship/i.test(transportName)) return 'sea';
 
-  return getDefaultTransportType(origin?.countryCode || origin?.countryName || '');
+  return '';
 }
 
 function normalizeTransportType(value) {
@@ -1045,15 +1170,6 @@ function normalizeTransportType(value) {
     .trim()
     .toLowerCase();
   return types[key] || '';
-}
-
-function getDefaultTransportType(country) {
-  if (/^(?:CN|China|US|USA|United States|UK|GB|United Kingdom)$/i.test(country)) return 'air';
-  if (/^(?:TR|Turkey|DE|Germany|GR|Greece|IT|Italy|ES|Spain|PL|Poland|CY|Cyprus)$/i.test(country)) {
-    return 'road';
-  }
-
-  return '';
 }
 
 function getOriginTooltip(origin) {
@@ -1116,7 +1232,7 @@ function getDeclarationDebugState(source) {
   const row = source?.closest?.(ROW_SELECTOR);
   return {
     sourceText: normalizeText(source?.textContent || '').slice(0, 300),
-    modalOpen: isDeclarationModalOpen(),
+    declarationFormOpen: isDeclarationFormOpen(),
     movedElements: movedElements.size,
     row: row ? getRowDebugInfo(row) : null,
     visibleRows: [...document.querySelectorAll(ROW_SELECTOR)]
@@ -1168,6 +1284,7 @@ function prettifyPackageName(value) {
 function enhancePrice(price) {
   if (!price) return;
 
+  price.classList.remove('inex-enhanced-parcels__declaration');
   const badges = findAllByClasses(price, ['rounded-[10px]']);
   add(badges[0], 'weight');
   add(badges[1], 'amount');
@@ -1384,112 +1501,59 @@ function mergeOriginInfo(...items) {
   return origin;
 }
 
-function getDomOriginInfo(row) {
-  const values = [];
-  collectContainerOriginValues(row?.closest(GROUP_SELECTOR), row, values);
-  collectContainerOriginValues(row?.closest('.inex-enhanced-parcels__flight'), row, values);
-  return mergeOriginInfo(getCountryInfo(values), getTransportInfo(values));
-}
+function mergeCountryInfo(...items) {
+  const origin = {};
 
-function collectContainerOriginValues(container, row, values) {
-  if (!container) return;
-
-  collectElementOriginValues(container.firstElementChild, values);
-  for (const child of container.children) {
-    if (child.contains(row)) continue;
-    collectElementOriginValues(child, values);
+  for (const item of items) {
+    origin.countryCode ||= item?.countryCode || '';
+    origin.countryName ||= item?.countryName || '';
   }
-}
 
-function collectElementOriginValues(element, values) {
-  const text = normalizeText(element?.textContent || '');
-  if (text) values.push(text);
+  return origin;
 }
 
 function getOriginInfo(item) {
-  const values = getOriginValues(item).map(String);
-
-  return mergeOriginInfo(getCountryInfo(values), getTransportInfo(values));
+  return mergeOriginInfo(getCountryInfo(item?.attributes), getTransportInfo(item?.attributes));
 }
 
-function getOriginValues(item) {
-  const values = [];
-  collectOriginValues(item?.attributes, values);
-  for (const relation of Object.values(item?.relationships || {})) {
-    const data = Array.isArray(relation?.data) ? relation.data : [relation?.data];
-    for (const entry of data) collectOriginValues(entry?.attributes, values);
-  }
-  return values;
+function getCountryInfo(attributes) {
+  const countryCode = getShipmentRouteCountry(attributes?.name);
+  if (!countryCode) return {};
+
+  return { countryCode, countryName: getCountryName(countryCode) };
 }
 
-function collectOriginValues(source, values) {
-  if (!source || typeof source !== 'object') return;
+function getShipmentRouteCountry(name) {
+  const routeCode = String(name || '').match(/^([A-Z]{2})(?:-|$)/)?.[1];
+  const countries = {
+    CH: 'CN',
+    CN: 'CN',
+    GR: 'GR',
+    TK: 'TR',
+    TR: 'TR',
+    US: 'US',
+  };
 
-  for (const [key, value] of Object.entries(source)) {
-    if (value == null || typeof value === 'object') continue;
-    if (
-      !/country|origin|from|warehouse|direction|transport|shipping|delivery|type|code|name/i.test(
-        key,
-      )
-    ) {
-      continue;
-    }
-    if (/^\d+$/.test(String(value).trim()) && !/direction|transport|shipping|delivery/i.test(key)) {
-      continue;
-    }
-
-    values.push(value);
-  }
+  return countries[routeCode] || '';
 }
 
-function getCountryInfo(values) {
-  const countries = [
-    [
-      'US',
-      'USA',
-      /(?:^|[^a-z])(?:us|usa)(?:$|[^a-z])|america|united states|აშშ|ამერიკა|сша|америк/i,
-    ],
-    [
-      'UK',
-      'United Kingdom',
-      /(?:^|[^a-z])(?:uk|gb)(?:$|[^a-z])|britain|united kingdom|დიდი ბრიტანეთი|британ/i,
-    ],
-    ['CN', 'China', /(?:^|[^a-z])cn(?:$|[^a-z])|china|ჩინეთი|китай/i],
-    ['TR', 'Turkey', /(?:^|[^a-z])tr(?:$|[^a-z])|turkey|თურქეთი|турци/i],
-    ['DE', 'Germany', /(?:^|[^a-z])de(?:$|[^a-z])|germany|გერმანია|герман/i],
-    ['GR', 'Greece', /(?:^|[^a-z])gr(?:$|[^a-z])|greece|საბერძნეთი|греци/i],
-    ['IT', 'Italy', /(?:^|[^a-z])it(?:$|[^a-z])|italy|იტალია|итали/i],
-    ['ES', 'Spain', /(?:^|[^a-z])es(?:$|[^a-z])|spain|ესპანეთი|испан/i],
-    ['PL', 'Poland', /(?:^|[^a-z])pl(?:$|[^a-z])|poland|პოლონეთი|польш/i],
-    ['CY', 'Cyprus', /(?:^|[^a-z])cy(?:$|[^a-z])|cyprus|კვიპროსი|кипр/i],
-    ['GE', 'Georgia', /(?:^|[^a-z])ge(?:$|[^a-z])|georgia|საქართველო|грузи/i],
-  ];
+function getCountryName(countryCode) {
+  const countries = {
+    CN: 'China',
+    GR: 'Greece',
+    TR: 'Turkey',
+    US: 'USA',
+  };
 
-  for (const value of values) {
-    for (const [countryCode, countryName, pattern] of countries) {
-      if (pattern.test(value)) return { countryCode, countryName };
-    }
-  }
-
-  return {};
+  return countries[countryCode] || '';
 }
 
-function getTransportInfo(values) {
-  const transports = [
-    ['air', 'Air', /air|flight|plane|avia|საჰაერო|авиа|самолет/i],
-    ['road', 'Road', /road|ground|land|truck|car|სახმელეთო|авто|назем/i],
-    ['sea', 'Sea', /sea|ocean|ship|საზღვაო|море|морск/i],
-    ['air', 'Air', /^1$/],
-    ['road', 'Road', /^4$/],
-  ];
+function getTransportInfo(attributes) {
+  const transportType = normalizeTransportType(attributes?.shipmentType);
+  if (!transportType) return {};
 
-  for (const value of values) {
-    for (const [transportType, transportName, pattern] of transports) {
-      if (pattern.test(value)) return { transportType, transportName };
-    }
-  }
-
-  return {};
+  const names = { air: 'Air', road: 'Road', sea: 'Sea' };
+  return { transportType, transportName: names[transportType] };
 }
 
 async function fetchParcelEvents(parcelId, headers) {

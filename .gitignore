@@ -8,3 +8,4 @@ browser-data/
 *.png
 *.jpg
 .sisyphus/
+.opencode/browser-mcp-profile/

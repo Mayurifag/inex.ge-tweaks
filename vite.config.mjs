@@ -67,6 +67,10 @@ export default defineConfig({
     minify: 'oxc',
     cssMinify: true,
   },
+  server: {
+    port: 53173,
+    strictPort: true,
+  },
   optimizeDeps: {
     exclude: ['vite-plugin-monkey/dist/client'],
   },

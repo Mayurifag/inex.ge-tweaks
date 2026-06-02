@@ -351,11 +351,29 @@ html.inex-enhanced-parcels .inex-enhanced-parcels__meta * {
 }
 
 html.inex-enhanced-parcels .inex-enhanced-parcels__declaration {
+  display: inline-flex !important;
+  align-items: center !important;
   height: auto !important;
   min-height: 24px !important;
-  padding: 4px 8px !important;
-  border-radius: 8px !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  background: var(--inex-transparent, transparent) !important;
   white-space: nowrap;
+}
+
+html.inex-enhanced-parcels .inex-enhanced-parcels__declaration > button {
+  min-height: 26px !important;
+  max-height: 26px !important;
+  padding: 4px 9px !important;
+  border-radius: 7px !important;
+  background: var(--inex-op-primary-light, transparent) !important;
+  color: var(--inex-muted, currentcolor) !important;
+}
+
+html.inex-enhanced-parcels
+  .inex-enhanced-parcels__row:has(form)
+  .inex-enhanced-parcels__declaration {
+  display: none !important;
 }
 
 html.inex-enhanced-parcels .inex-enhanced-parcels__declaration * {

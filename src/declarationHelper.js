@@ -1,3 +1,5 @@
+import { GM_addStyle } from '$';
+
 const COUNTRY_DEFAULTS = {
   CN: { currency: 'CNY', origin: 'taobao.com' },
   US: { currency: 'USD', origin: 'amazon.com' },
@@ -51,12 +53,40 @@ const QUANTITY_RE = /quantity|რაოდენობა|колич/i;
 const TOTAL_AMOUNT_RE = /order total amount|total amount|ჯამური|общая/i;
 const ITEM_COST_RE = /item cost|cost|ღირებულება|стоимость|цена/i;
 const SENDER_ORIGIN_RE = /sender origin|origin site|website|საიტი|გამომგზავნ|отправител|сайт/i;
-const OTHER_RE = /other|სხვა|გაურკვეველი|უცნობი|другое|прочее|неизвест/i;
+const OTHER_RE = /other|uncertain|unknown|სხვა|გაურკვეველი|უცნობი|другое|прочее|неизвест/i;
 const REMEMBERED_COUNTRY_TTL = 10_000;
 const DEBUG_PREFIX = '[inex declaration]';
+const CATEGORY_STYLE = `
+.custom-select[data-inex-category-label] {
+  position: relative;
+}
+
+.custom-select[data-inex-category-label] input {
+  background: transparent !important;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+.custom-select[data-inex-category-label]::after {
+  content: attr(data-inex-category-label);
+  position: absolute;
+  right: 2.5rem;
+  bottom: 0.45rem;
+  left: 1rem;
+  overflow: hidden;
+  color: var(--inex-category-label-color, currentColor);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+`;
 
 let observer;
 let helperTimer;
+let categoryStylesInjected = false;
+let categoryTranslationsLoading;
 let lastCountryCode = '';
 let lastCountryRememberedAt = 0;
 let userInteractionBound = false;
@@ -66,8 +96,10 @@ let lastDeclarationFormInteractionAt = 0;
 const clickedManualButtons = new WeakSet();
 const defaultedFields = new WeakSet();
 const selectAttempts = new WeakMap();
+const categoryTranslations = new Map([['გაურკვეველი კატეგორია', 'Unknown category']]);
 
 export function applyDeclarationHelper() {
+  injectCategoryStyles();
   bindDeclarationClicks();
   bindDeclarationUserInteractions();
   onReady(() => {
@@ -137,6 +169,12 @@ function enhanceDeclarationSetup() {
   const form = getDeclarationForm(root);
   if (!form) return;
   setActiveDeclarationForm(form);
+  loadCategoryTranslations();
+  translateCategorySelects(form);
+  translateVisibleCategoryOptions();
+  fillQuantityDefaults(form);
+  syncAmountFields(form);
+  defaultCustomSelect(form, CATEGORY_RE, OTHER_RE, 'other', true);
   if (shouldLeaveFormAlone()) {
     debug('leave form alone after user input', getFormDebugInfo(form));
     return;
@@ -146,16 +184,110 @@ function enhanceDeclarationSetup() {
   const defaults = COUNTRY_DEFAULTS[countryCode] || {};
   debug('form detected', { countryCode, defaults, ...getFormDebugInfo(form) });
 
-  fillQuantityDefaults(form);
   fillSenderOrigin(form, defaults.origin);
-  syncAmountFields(form);
   defaultCustomSelect(
     form,
     CURRENCY_RE,
     getCurrencyOptionPattern(defaults.currency),
     defaults.currency,
   );
-  defaultCustomSelect(form, CATEGORY_RE, OTHER_RE, 'other');
+}
+
+function injectCategoryStyles() {
+  if (categoryStylesInjected) return;
+
+  categoryStylesInjected = true;
+  GM_addStyle(CATEGORY_STYLE);
+}
+
+function loadCategoryTranslations() {
+  if (categoryTranslationsLoading) return categoryTranslationsLoading;
+
+  categoryTranslationsLoading = fetch('/api/v1/front/cabinet/hs-categories', {
+    headers: getCategoryHeaders(),
+  })
+    .then((response) => (response.ok ? response.json() : null))
+    .then((payload) => {
+      for (const item of payload?.data || []) {
+        const attributes = item.attributes || {};
+        const translation = normalizeText(attributes.originalTextEn || '');
+        if (!translation) continue;
+
+        for (const original of [attributes.originalTextKa, attributes.originalText]) {
+          const key = normalizeText(original || '');
+          if (key) categoryTranslations.set(key, translation);
+        }
+      }
+      scheduleDeclarationHelper();
+    })
+    .catch((error) => debug('category translations failed', { error: error.message }));
+
+  return categoryTranslationsLoading;
+}
+
+function getCategoryHeaders() {
+  const token =
+    localStorage.getItem('accessToken') || sessionStorage.getItem('session_accessToken');
+  const tokenType =
+    localStorage.getItem('tokenType') || sessionStorage.getItem('session_tokenType') || 'Bearer';
+  const headers = {
+    'accept-language': 'ka',
+    'author-type': localStorage.getItem('chosenUserType') || 'User',
+  };
+
+  if (token) {
+    const authorId = getJwtSubject(token);
+    headers.authorization = `${tokenType} ${token}`;
+    if (authorId) headers['author-id'] = authorId;
+  }
+
+  return headers;
+}
+
+function getJwtSubject(token) {
+  try {
+    const payload = token.split('.')[1] || '';
+    const base64 = payload
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      .padEnd(Math.ceil(payload.length / 4) * 4, '=');
+    return JSON.parse(atob(base64)).sub || '';
+  } catch {
+    return '';
+  }
+}
+
+function translateCategorySelects(form) {
+  for (const select of findCustomSelects(form, CATEGORY_RE)) translateCategorySelect(select);
+}
+
+function translateCategorySelect(select) {
+  const input = select?.querySelector('input');
+  if (!(select instanceof HTMLElement) || !(input instanceof HTMLInputElement)) return;
+
+  const original = getFieldValue(input);
+  const translation = categoryTranslations.get(original);
+  if (!translation) {
+    select.removeAttribute('data-inex-category-label');
+    return;
+  }
+
+  select.dataset.inexCategoryLabel = translation;
+  select.style.removeProperty('--inex-category-label-color');
+}
+
+function translateVisibleCategoryOptions() {
+  for (const option of document.querySelectorAll('li span')) {
+    if (!(option instanceof HTMLElement) || !isVisible(option)) continue;
+
+    const original = option.dataset.inexCategoryOriginal || normalizeText(option.textContent || '');
+    const translation = categoryTranslations.get(original);
+    if (!translation) continue;
+
+    option.dataset.inexCategoryOriginal = original;
+    option.title = original;
+    if (normalizeText(option.textContent || '') !== translation) option.textContent = translation;
+  }
 }
 
 function bindDeclarationUserInteractions() {
@@ -164,7 +296,30 @@ function bindDeclarationUserInteractions() {
   userInteractionBound = true;
   document.addEventListener('pointerdown', markDeclarationUserInteraction, true);
   document.addEventListener('keydown', markDeclarationUserInteraction, true);
+  document.addEventListener('input', syncTotalFromItemInput, true);
   document.addEventListener('input', markDeclarationUserInteraction, true);
+  document.addEventListener('click', syncActiveDeclarationFormAfterClick, true);
+}
+
+function syncTotalFromItemInput(event) {
+  if (event.isTrusted === false) return;
+
+  const target = event.target instanceof Element ? event.target : null;
+  const form = target?.closest('form');
+  if (!form || !DECLARATION_FORM_RE.test(normalizeText(form.textContent || ''))) return;
+
+  const itemFields = [
+    ...getFieldsByLabel(form, QUANTITY_RE),
+    ...getFieldsByLabel(form, ITEM_COST_RE),
+  ];
+  if (itemFields.includes(target)) syncTotalFromItems(form);
+}
+
+function syncActiveDeclarationFormAfterClick(event) {
+  if (event.isTrusted === false || !activeDeclarationForm?.isConnected) return;
+
+  scheduleDeclarationHelper();
+  setTimeout(scheduleDeclarationHelper, 300);
 }
 
 function markDeclarationUserInteraction(event) {
@@ -178,6 +333,8 @@ function markDeclarationUserInteraction(event) {
   activeDeclarationForm = form;
   userInteractedWithActiveForm = true;
   lastDeclarationFormInteractionAt = Date.now();
+  scheduleDeclarationHelper();
+  setTimeout(scheduleDeclarationHelper, 300);
 }
 
 function setActiveDeclarationForm(form) {
@@ -267,30 +424,80 @@ function fillSenderOrigin(form, origin) {
 }
 
 function syncAmountFields(form) {
-  const total = getFieldsByLabel(form, TOTAL_AMOUNT_RE)[0];
-  const itemCost = getFieldsByLabel(form, ITEM_COST_RE)[0];
-  if (!total || !itemCost) return;
+  hideTotalAmountField(form);
+  syncTotalFromItems(form);
+}
 
-  const totalValue = getFieldValue(total);
-  const itemCostValue = getFieldValue(itemCost);
-  if (totalValue && !itemCostValue) {
-    debug('sync item cost from total', { totalValue });
-    setFieldValue(itemCost, totalValue);
-  } else if (itemCostValue && !totalValue) {
-    debug('sync total from item cost', { itemCostValue });
-    setFieldValue(total, itemCostValue);
+function hideTotalAmountField(form) {
+  const total = getFieldsByLabel(form, TOTAL_AMOUNT_RE)[0];
+  const wrapper = total && getFieldWrapper(total);
+  if (!wrapper) return;
+
+  wrapper.style.setProperty('display', 'none', 'important');
+  wrapper.setAttribute('aria-hidden', 'true');
+}
+
+function syncTotalFromItems(form) {
+  const total = getFieldsByLabel(form, TOTAL_AMOUNT_RE)[0];
+  if (!total) return;
+
+  const sum = getFieldsByLabel(form, ITEM_COST_RE).reduce((result, itemCost, index) => {
+    const quantity = getFieldsByLabel(form, QUANTITY_RE)[index];
+    const cost = parseAmount(getFieldValue(itemCost));
+    if (!Number.isFinite(cost)) return result;
+
+    return result + cost * (parseAmount(getFieldValue(quantity)) || 1);
+  }, 0);
+
+  if (!sum) return;
+
+  const totalValue = formatAmount(sum);
+  if (getFieldValue(total) === totalValue) return;
+
+  debug('sync total from parcel items', { totalValue });
+  setFieldValue(total, totalValue);
+}
+
+function getFieldWrapper(field) {
+  let current = field.parentElement;
+
+  while (current && current !== field.form && current !== document.body) {
+    const text = normalizeText(current.textContent || '');
+    const fieldCount = current.querySelectorAll('input, textarea, .custom-select').length;
+    if (TOTAL_AMOUNT_RE.test(text) && fieldCount <= 1) return current;
+    current = current.parentElement;
+  }
+
+  return field.parentElement;
+}
+
+function parseAmount(value) {
+  const normalized = normalizeText(value).replace(',', '.');
+  if (!normalized) return NaN;
+
+  return Number(normalized);
+}
+
+function formatAmount(value) {
+  return (Math.round(value * 100) / 100)
+    .toFixed(2)
+    .replace(/\.00$/, '')
+    .replace(/(\.\d)0$/, '$1');
+}
+
+function defaultCustomSelect(form, labelPattern, optionPattern, debugValue, force = false) {
+  if (!optionPattern) return;
+
+  for (const select of findCustomSelects(form, labelPattern)) {
+    defaultSingleCustomSelect(select, optionPattern, debugValue, force);
   }
 }
 
-function defaultCustomSelect(form, labelPattern, optionPattern, debugValue) {
-  if (!optionPattern) return;
-
-  const select = findCustomSelect(form, labelPattern);
-  if (!select || shouldLeaveFormAlone()) return;
-
+function defaultSingleCustomSelect(select, optionPattern, debugValue, force) {
   const input = select.querySelector('input');
   const currentValue = getFieldValue(input);
   const hasError = !!select.parentElement?.querySelector('[class*="text-error"]');
+  if (!force && shouldLeaveFormAlone() && currentValue && !hasError) return;
   if (currentValue && optionPattern.test(currentValue) && !hasError) return;
 
   const attempts = selectAttempts.get(select) || 0;
@@ -302,11 +509,11 @@ function defaultCustomSelect(form, labelPattern, optionPattern, debugValue) {
 
   debug('open select for default', { label: debugValue, attempts });
   trigger.click();
-  setTimeout(() => clickSelectOption(select, optionPattern, debugValue), 120);
+  setTimeout(() => clickSelectOption(select, optionPattern, debugValue, force), 120);
 }
 
-function clickSelectOption(select, optionPattern, debugValue) {
-  if (!select.isConnected || shouldLeaveFormAlone()) return;
+function clickSelectOption(select, optionPattern, debugValue, force) {
+  if (!select.isConnected || (!force && shouldLeaveFormAlone())) return;
 
   const option = getVisibleSelectOption(optionPattern);
   if (!option) {
@@ -318,8 +525,8 @@ function clickSelectOption(select, optionPattern, debugValue) {
   option.click();
 }
 
-function findCustomSelect(form, labelPattern) {
-  return [...form.querySelectorAll('.custom-select')].find((select) =>
+function findCustomSelects(form, labelPattern) {
+  return [...form.querySelectorAll('.custom-select')].filter((select) =>
     labelPattern.test(normalizeText(select.textContent || '')),
   );
 }
