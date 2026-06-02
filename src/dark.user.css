@@ -460,6 +460,53 @@
     color: inherit !important;
   }
 
+  .inex-address-page .inex-address-tab {
+    display: grid !important;
+    grid-template-columns: auto max-content !important;
+    gap: 2px 10px !important;
+    align-items: center !important;
+    background: var(--inex-tab-bg) !important;
+    color: var(--inex-muted) !important;
+    border-color: var(--inex-border-soft) !important;
+  }
+
+  .inex-address-page .inex-address-tab > :first-child {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .inex-address-page .inex-address-tab-label {
+    grid-column: 2;
+    grid-row: 1;
+    line-height: 1.1;
+  }
+
+  .inex-address-page .inex-address-tab-price {
+    grid-column: 2;
+    grid-row: 2;
+    color: var(--inex-dim) !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
+  .inex-address-page .inex-address-tab:hover {
+    background: var(--inex-tab-hover-bg) !important;
+    color: var(--inex-text) !important;
+  }
+
+  .inex-address-page .inex-address-tab--active {
+    background: var(--inex-tab-active-bg) !important;
+    color: var(--inex-red-text) !important;
+    border-bottom-color: var(--inex-red) !important;
+    box-shadow: inset 0 -2px 0 var(--inex-red) !important;
+  }
+
+  .inex-address-page .inex-address-tab--active .inex-address-tab-price {
+    color: var(--inex-secondary-light) !important;
+  }
+
   [class*='text-[#D9D9D9]'] {
     color: var(--inex-dim-text) !important;
   }
