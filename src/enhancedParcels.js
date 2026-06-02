@@ -38,6 +38,10 @@ const EVENT_FETCH_CONCURRENCY = 6;
 const OBSERVED_ATTRIBUTES = ['class', 'style', 'disabled', 'aria-disabled', 'data-state', 'hidden'];
 const DECLARATION_MODAL_RE =
   /add declaration|update declaration|upload invoice|ai declaration|by hand|დეკლარ|ინვოის|деклар|инвойс/i;
+const DECLARATION_ACTION_RE = /declaration|declare\b|დეკლარ|деклар/i;
+const DECLARATION_STATUS_RE = /^(?:Not Declared|არ არის დეკლარირებული|Не декларировано)$/i;
+const PARCEL_DETAILS_MODAL_RE =
+  /details|processes|parcel content|additional information|დეტალ|პროცეს|ამანათ|детал|процесс|посыл/i;
 const DECLARATION_DEBUG_PREFIX = '[inex declaration]';
 
 let menuCommandId;
@@ -53,6 +57,10 @@ const movedElements = new Set();
 const originalPositions = new WeakMap();
 let declarationRestoreBound = false;
 let declarationRowClicksBound = false;
+let declarationFetchDebugBound = false;
+let declarationUiOpen = false;
+let declarationFormSeen = false;
+let replayingDeclarationClick = false;
 
 export function applyEnhancedParcels() {
   GM_addStyle(enhancedParcelsCss);
@@ -61,6 +69,7 @@ export function applyEnhancedParcels() {
   bindDeclarationDomRestore();
   bindDeclarationRowClicks();
   bindDeclarationEscapeDismiss();
+  bindDeclarationFetchDebug();
   updateEnhancedParcels();
   onReady(() => {
     observeDom();
@@ -97,7 +106,13 @@ function bindDeclarationEscapeDismiss() {
   document.addEventListener(
     'keydown',
     (event) => {
-      if (event.key !== 'Escape' || !isParcelsPath() || !isDeclarationFormOpen()) return;
+      if (
+        event.key !== 'Escape' ||
+        !isParcelsPath() ||
+        (!isDeclarationFormOpen() && !isParcelDetailsModalOpen())
+      ) {
+        return;
+      }
 
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -105,6 +120,105 @@ function bindDeclarationEscapeDismiss() {
     },
     true,
   );
+}
+
+function bindDeclarationFetchDebug() {
+  if (declarationFetchDebugBound) return;
+
+  declarationFetchDebugBound = true;
+  const nativeFetch = window.fetch;
+  window.fetch = async (...args) => {
+    const startedAt = performance.now();
+    const info = getFetchDebugInfo(args);
+    const shouldDebug = shouldDebugDeclarationFetch(info);
+
+    if (shouldDebug) debugDeclaration('fetch start', info);
+
+    try {
+      const response = await nativeFetch.apply(window, args);
+      if (shouldDebug) {
+        debugDeclaration('fetch response', {
+          ...info,
+          ms: Math.round(performance.now() - startedAt),
+          status: response.status,
+          ok: response.ok,
+          body: await readResponseDebugBody(response),
+        });
+      }
+      return response;
+    } catch (error) {
+      if (shouldDebug) {
+        debugDeclaration('fetch error', {
+          ...info,
+          ms: Math.round(performance.now() - startedAt),
+          error: error.message,
+        });
+      }
+      throw error;
+    }
+  };
+}
+
+function getFetchDebugInfo(args) {
+  const [resource, init = {}] = args;
+  const request = resource instanceof Request ? resource : null;
+  const url = request?.url || String(resource || '');
+  const method = (init.method || request?.method || 'GET').toUpperCase();
+  return {
+    method,
+    url: getDebugUrl(url),
+    body: getRequestDebugBody(init.body),
+    declarationFormOpen: isDeclarationFormOpen(),
+  };
+}
+
+function shouldDebugDeclarationFetch(info) {
+  const text = `${info.url} ${info.body}`;
+  return (
+    isParcelsPath() &&
+    (/declar|invoice|ინვოის|დეკლარ/i.test(text) ||
+      (info.declarationFormOpen && info.method !== 'GET'))
+  );
+}
+
+function getDebugUrl(value) {
+  try {
+    const url = new URL(value, location.href);
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return value;
+  }
+}
+
+function getRequestDebugBody(body) {
+  if (!body) return '';
+  if (typeof body === 'string') return truncateDebugText(body);
+  if (body instanceof URLSearchParams) return truncateDebugText(body.toString());
+  if (body instanceof FormData) return getFormDataDebugBody(body);
+  return Object.prototype.toString.call(body);
+}
+
+function getFormDataDebugBody(body) {
+  const entries = [];
+  for (const [key, value] of body.entries()) {
+    entries.push([key, value instanceof File ? `[file:${value.name}:${value.size}]` : value]);
+  }
+  return entries;
+}
+
+async function readResponseDebugBody(response) {
+  const contentType = response.headers.get('content-type') || '';
+  if (!/json|text|html/i.test(contentType)) return '';
+
+  try {
+    return truncateDebugText(await response.clone().text());
+  } catch (error) {
+    return `[unreadable: ${error.message}]`;
+  }
+}
+
+function truncateDebugText(value) {
+  return String(value).slice(0, 2000);
 }
 
 function isInteractiveTarget(target) {
@@ -115,7 +229,7 @@ function isInteractiveTarget(target) {
 
 function getRowDeclarationButton(row) {
   return [...row.querySelectorAll('button, [role="button"]')].find((button) =>
-    /declaration|declare|დეკლარ|деклар/i.test(normalizeText(button.textContent || '')),
+    DECLARATION_ACTION_RE.test(normalizeText(button.textContent || '')),
   );
 }
 
@@ -270,14 +384,23 @@ function scheduleEnhance() {
 
 function enhanceParcelsDom() {
   ensureParcelData();
+
+  const declarationFormOpen = isDeclarationFormOpen();
+  if (declarationFormOpen) {
+    declarationFormSeen = true;
+    return;
+  }
+
+  if (declarationUiOpen && declarationFormSeen) {
+    declarationUiOpen = false;
+    declarationFormSeen = false;
+  } else if (declarationUiOpen) {
+    return;
+  }
+
   enhanceChrome();
   enhanceTabsAndPanel();
   enhanceLocations();
-
-  if (isDeclarationFormOpen()) {
-    restoreMovedParcelDom();
-    return;
-  }
 
   enhanceRows();
   enhanceParcelDetails();
@@ -293,9 +416,16 @@ function bindDeclarationDomRestore() {
       const target = event.target instanceof Element ? event.target : null;
       const control = target?.closest('button, a, [role="button"], [class*="cursor-pointer"]');
       const text = normalizeText(control?.textContent || '');
-      if (/declaration|declare|დეკლარ|деклар/i.test(text)) {
-        debugDeclaration('restore before declaration open', getDeclarationDebugState(control));
-        restoreMovedParcelDom();
+      if (DECLARATION_ACTION_RE.test(text)) {
+        if (!replayingDeclarationClick) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          openDeclarationFromRestoredRow(control);
+          return;
+        }
+
+        declarationUiOpen = true;
+        debugDeclaration('declaration open click', getDeclarationDebugState(control));
       }
     },
     true,
@@ -312,6 +442,8 @@ function bindDeclarationDomRestore() {
           getDeclarationDebugState(event.target),
         );
         restoreMovedParcelDom();
+        declarationUiOpen = false;
+        declarationFormSeen = false;
         refreshParcelDataSoon();
         setTimeout(
           () =>
@@ -327,12 +459,40 @@ function bindDeclarationDomRestore() {
   );
 }
 
+function openDeclarationFromRestoredRow(control) {
+  const row = control?.closest(ROW_SELECTOR);
+  if (!row) return;
+
+  debugDeclaration('restore before declaration replay', getDeclarationDebugState(control));
+  restoreMovedParcelDom(row);
+
+  const button = getRowDeclarationButton(row);
+  if (!button) return;
+
+  declarationUiOpen = true;
+  replayingDeclarationClick = true;
+  try {
+    button.click();
+  } finally {
+    replayingDeclarationClick = false;
+  }
+}
+
 function isDeclarationFormOpen() {
   const modalText = document.getElementById('modal-root')?.textContent || '';
   if (DECLARATION_MODAL_RE.test(modalText)) return true;
 
   return [...document.querySelectorAll('form')].some((form) =>
     DECLARATION_MODAL_RE.test(form.textContent || ''),
+  );
+}
+
+function isParcelDetailsModalOpen() {
+  return [...document.querySelectorAll('div[class*="fixed"][class*="inset-0"]')].some(
+    (element) =>
+      element instanceof HTMLElement &&
+      element.getBoundingClientRect().height > 0 &&
+      PARCEL_DETAILS_MODAL_RE.test(element.textContent || ''),
   );
 }
 
@@ -353,9 +513,11 @@ function moveElement(element, parent) {
   parent.append(element);
 }
 
-function restoreMovedParcelDom() {
+function restoreMovedParcelDom(scope = document) {
   let restored = 0;
   for (const element of [...movedElements]) {
+    if (scope !== document && !scope?.contains(element)) continue;
+
     const position = originalPositions.get(element);
     movedElements.delete(element);
     originalPositions.delete(element);
@@ -369,16 +531,21 @@ function restoreMovedParcelDom() {
     }
   }
 
-  for (const element of document.querySelectorAll(
+  for (const element of scope.querySelectorAll(
     `.${SIDE_CLASS}, .${SECTION_CLASS}, .inex-enhanced-parcels__status-cell, .${ACTIONS_CLASS}`,
   )) {
     element.remove();
   }
-  debugDeclaration('restore moved parcel dom', { restored, moved: movedElements.size });
+  debugDeclaration('restore moved parcel dom', {
+    restored,
+    moved: movedElements.size,
+    scoped: scope !== document,
+  });
 }
 
 function refreshParcelDataSoon() {
   setTimeout(() => {
+    debugDeclaration('refresh parcel data after declaration submit');
     localStorage.removeItem(CACHE_STORAGE_KEY);
     parcelInfoByTracking = new Map();
     parcelDataFetchedAt = 0;
@@ -955,7 +1122,9 @@ function ensureActionsCell(side, price, declaration, paid) {
 }
 
 function getRowDeclarationElement(root) {
-  return getRowActionCandidates(root).find((element) => getRowDeclarationButton(element));
+  return getRowActionCandidates(root).find(
+    (element) => getRowDeclarationButton(element) || isDeclarationStatusElement(element),
+  );
 }
 
 function getRowPriceElement(root) {
@@ -972,6 +1141,10 @@ function getRowPaidElement(root) {
 
 function isPaidElement(element) {
   return /^(?:Paid|is paid|გადახდილია|оплачено)$/i.test(normalizeText(element?.textContent || ''));
+}
+
+function isDeclarationStatusElement(element) {
+  return DECLARATION_STATUS_RE.test(normalizeText(element?.textContent || ''));
 }
 
 function getRowActionCandidates(root) {
@@ -1355,9 +1528,11 @@ function ensureParcelData() {
       parcelInfoByTracking = info;
       parcelDataFetchedAt = Date.now();
       writeParcelDataCache(info);
+      debugDeclaration('parcel data refreshed', getParcelDataDebugSummary(info));
       shouldReschedule = true;
     })
-    .catch(() => {
+    .catch((error) => {
+      debugDeclaration('parcel data refresh failed', { error: error.message, hasCache: !!cached });
       if (!cached) return;
 
       parcelInfoByTracking = cached.info;
@@ -1368,6 +1543,16 @@ function ensureParcelData() {
       parcelDataPromise = undefined;
       if (shouldReschedule) scheduleEnhance();
     });
+}
+
+function getParcelDataDebugSummary(info) {
+  const parcels = [...info.values()];
+  return {
+    count: parcels.length,
+    needsDeclarationRows: [...document.querySelectorAll(ROW_SELECTOR)]
+      .filter((row) => getRowDeclarationButton(row))
+      .map(getRowDebugInfo),
+  };
 }
 
 async function loadParcelData(cachedInfo) {

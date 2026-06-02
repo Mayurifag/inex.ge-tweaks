@@ -46,7 +46,7 @@ const GENERATE_INVOICE_RE = /generate|გენერირება|დამ�
 const MANUAL_INVOICE_RE = /by hand|manual|manually|ხელით|ручн/i;
 const DECLARATION_FORM_RE =
   /sender origin|origin site|total amount|item cost|quantity|category|currency|გამომგზავნ|ჯამური|რაოდენობა|კატეგორია|ვალუტა|ღირებულება|отправител|общая стоимость|колич|категор|валют|стоимость|цена/i;
-const DECLARATION_CLICK_RE = /declaration|declare|დეკლარ|деклар/i;
+const DECLARATION_CLICK_RE = /declaration|declare\b|დეკლარ|деклар/i;
 const CATEGORY_RE = /category|კატეგორია|категор/i;
 const CURRENCY_RE = /currency|ვალუტა|валют/i;
 const QUANTITY_RE = /quantity|რაოდენობა|колич/i;
@@ -725,7 +725,11 @@ function getFieldDebugInfo(field) {
 }
 
 function getRowTracking(row) {
-  return normalizeText(row?.textContent || '').match(/[A-Z0-9]{10,}/)?.[0] || '';
+  return (
+    row?.querySelector('[data-inex-tracking-code]')?.getAttribute('data-inex-tracking-code') ||
+    normalizeText(row?.textContent || '').match(/[A-Z0-9]{10,}(?=[^A-Z0-9]|$)/)?.[0] ||
+    ''
+  );
 }
 
 function debug(message, data) {
