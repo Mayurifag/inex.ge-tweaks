@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import monkey from 'vite-plugin-monkey';
 import { minify as minifyJs } from 'rolldown/utils';
-import { stripUserStyle } from './scripts/userstyle-css.mjs';
+import { minifyCss, stripUserStyle } from './scripts/userstyle-css.mjs';
 
 const ICON =
   'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHBhdGggZD0iTTMyIDQgTDU4IDE3IFY0NyBMMzIgNjAgTDYgNDcgVjE3IFogTTYgMTcgTDMyIDMwIEw1OCAxNyBNMzIgMzAgVjYwIiBmaWxsPSJub25lIiBzdHJva2U9IiMwMDY2Y2MiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==';
@@ -10,6 +10,10 @@ const USERSCRIPT_URL =
 
 function outputFileName() {
   return 'inex.ge-tweaks.user.js';
+}
+
+function rawCssModuleValue(code) {
+  return JSON.parse(code.slice('export default '.length).replace(/;$/, ''));
 }
 
 async function minifyUserscript(code) {
@@ -32,6 +36,14 @@ export default defineConfig({
       transform(code, id) {
         if (!id.includes('/src/dark.user.css?raw')) return null;
         return { code: `export default ${JSON.stringify(stripUserStyle(code))};`, map: null };
+      },
+    },
+    {
+      name: 'minify-raw-css',
+      enforce: 'pre',
+      transform(code, id) {
+        if (!id.endsWith('.css?raw') || id.includes('/src/dark.user.css?raw')) return null;
+        return { code: `export default ${JSON.stringify(minifyCss(rawCssModuleValue(code)))};`, map: null };
       },
     },
     monkey({

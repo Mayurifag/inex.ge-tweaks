@@ -12,7 +12,7 @@ export function stripUserStyle(css) {
   );
 }
 
-function minifyCss(css) {
+export function minifyCss(css) {
   let out = '';
   let quote = '';
   let space = false;
