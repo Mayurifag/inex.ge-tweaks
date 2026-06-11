@@ -1,7 +1,7 @@
 /* ==UserStyle==
 @name           inex.ge dark
 @namespace      github.com/Mayurifag/inex.ge-tweaks
-@version        0.1.3
+@version        0.1.4
 @description    Dark theme skeleton for inex.ge.
 @author         Mayurifag
 @updateURL      https://github.com/Mayurifag/inex.ge-tweaks/raw/refs/heads/dist/dark.user.css
@@ -458,6 +458,33 @@
     [class*='border-b-2'][class*='cursor-pointer'][class*='w-full']
     * {
     color: inherit !important;
+  }
+
+  .min-w-0.flex-1
+    > .mb-6
+    > .grid:has(a[href*='/profile/balance-transactions']):has(
+      a[href*='/profile/bonus-transactions']
+    ) {
+    display: none !important;
+  }
+
+  .swiper [class*='border-b-2'][class*='cursor-pointer'] {
+    border-radius: 0.5rem 0.5rem 0 0;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease,
+      color 120ms ease;
+  }
+
+  .swiper [class*='border-b-2'][class*='cursor-pointer']:hover {
+    background: var(--inex-tab-hover-bg) !important;
+    color: var(--inex-text) !important;
+    border-bottom-color: var(--inex-red-text) !important;
+  }
+
+  [role='switch'][data-state='checked'] {
+    background-color: var(--inex-green-soft) !important;
+    box-shadow: 0 0 0 1px var(--inex-border-soft) !important;
   }
 
   .inex-address-page .inex-address-tab {

@@ -406,7 +406,29 @@ html.inex-enhanced-parcels .inex-enhanced-parcels__pay {
   font-size: 13px !important;
 }
 
-html.inex-enhanced-parcels .inex-enhanced-parcels__pay span {
+html.inex-enhanced-parcels .inex-enhanced-parcels__paid {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 4px !important;
+  min-width: 42px !important;
+  min-height: 26px !important;
+  max-height: 26px !important;
+  padding: 4px 9px !important;
+  border-radius: 7px !important;
+  background: var(--inex-op-primary-light, transparent) !important;
+  color: var(--inex-muted, currentcolor) !important;
+  white-space: nowrap !important;
+}
+
+html.inex-enhanced-parcels .inex-enhanced-parcels__paid svg {
+  width: 12px !important;
+  height: 12px !important;
+  flex-shrink: 0;
+}
+
+html.inex-enhanced-parcels :is(.inex-enhanced-parcels__pay, .inex-enhanced-parcels__paid) span,
+html.inex-enhanced-parcels .inex-enhanced-parcels__paid {
   font-size: 13px !important;
   line-height: 1 !important;
 }

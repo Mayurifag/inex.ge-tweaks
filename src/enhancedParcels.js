@@ -756,7 +756,10 @@ function enhanceRows() {
     const info = add(children[0], 'row-info');
     const side = ensureSideCell(row);
     const price = add(getRowPriceElement(side) || getRowPriceElement(row), 'price');
-    const paid = getRowPaidElement(side) || getRowPaidElement(row) || children.find(isPaidElement);
+    let paid = add(
+      getRowPaidElement(side) || getRowPaidElement(row) || children.find(isPaidElement),
+      'paid',
+    );
     const declaration =
       getRowDeclarationElement(side) ||
       getRowDeclarationElement(row) ||
@@ -764,10 +767,12 @@ function enhanceRows() {
 
     add(declaration, 'declaration');
     normalizeDeclarationControl(declaration);
+    paid = normalizePaidControl(paid);
     row.classList.toggle('inex-enhanced-parcels__row--declaration', !!declaration);
     ensureActionsCell(side, price, declaration, paid);
     enhanceInfo(info, row, side);
     enhancePrice(price);
+    movePaidPriceToTooltip(price, paid);
 
     const sortInfo = getRowSortInfo(row);
     row.classList.toggle('inex-enhanced-parcels__row--active', !sortInfo.arrived);
@@ -1216,8 +1221,8 @@ function ensureActionsCell(side, price, declaration, paid) {
   }
 
   moveElement(declaration, actions);
-  moveElement(paid, actions);
   moveElement(price, actions);
+  moveElement(paid, actions);
   return actions;
 }
 
@@ -1228,15 +1233,27 @@ function getRowDeclarationElement(root) {
 }
 
 function getRowPriceElement(root) {
-  return getRowActionCandidates(root).find((element) =>
-    [...element.querySelectorAll('button')].some((button) =>
-      /^\s*Pay\s*$/i.test(button.textContent || ''),
-    ),
-  );
+  return getRowActionCandidates(root).find((element) => isPriceElement(element));
 }
 
 function getRowPaidElement(root) {
-  return getRowActionCandidates(root).find(isPaidElement);
+  for (const candidate of getRowActionCandidates(root)) {
+    if (isPaidElement(candidate)) return candidate;
+    const paid = findAllByText(candidate, /^(?:Paid|is paid|გადახდილია|оплачено)$/i)
+      .filter(isPaidElement)
+      .at(-1);
+    if (paid) return paid;
+  }
+
+  return undefined;
+}
+
+function isPriceElement(element) {
+  return (
+    [...element.querySelectorAll('button')].some((button) =>
+      /^\s*Pay\s*$/i.test(button.textContent || ''),
+    ) || findAllByClasses(element, ['rounded-[10px]']).length >= 2
+  );
 }
 
 function isPaidElement(element) {
@@ -1266,6 +1283,44 @@ function normalizeDeclarationControl(declaration) {
   setTextContent(button.querySelector('span') || button, 'Needs Declaration');
   button.setAttribute('aria-label', 'Needs Declaration');
   button.title = 'Create declaration';
+}
+
+function normalizePaidControl(paid) {
+  if (!paid) return null;
+
+  const wrapper = document.createElement('span');
+  wrapper.className = 'inex-enhanced-parcels__paid';
+
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('viewBox', '0 0 24 24');
+  icon.setAttribute('fill', 'none');
+  icon.setAttribute('stroke', 'currentColor');
+  icon.setAttribute('stroke-width', '2');
+  icon.setAttribute('stroke-linecap', 'round');
+  icon.setAttribute('stroke-linejoin', 'round');
+
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'M20 6 9 17l-5-5');
+  icon.append(path);
+
+  const label = document.createElement('span');
+  setTextContent(label, 'Paid');
+
+  wrapper.append(icon, label);
+  paid.replaceWith(wrapper);
+  return wrapper;
+}
+
+function movePaidPriceToTooltip(price, paid) {
+  if (!price || !paid) return;
+
+  const amount = price.querySelector('.inex-enhanced-parcels__amount');
+  const amountText = normalizeText(amount?.textContent || '');
+  if (!amountText) return;
+
+  paid.title = amountText;
+  paid.setAttribute('aria-label', `Paid - ${amountText}`);
+  amount.classList.add(HIDDEN_CLASS);
 }
 
 function getTrackingCode(tracking) {
@@ -1637,10 +1692,10 @@ function enhancePrice(price) {
   add(badges[0], 'weight');
   add(badges[1], 'amount');
 
-  for (const paid of findAllByClasses(price, ['bg-green-50'])) paid.classList.add(HIDDEN_CLASS);
   for (const paid of findAllByText(price, /^(?:Paid|is paid|გადახდილია|оплачено)$/i)) {
     paid.classList.add(HIDDEN_CLASS);
   }
+  for (const icon of price.querySelectorAll('svg.lucide-check')) icon.classList.add(HIDDEN_CLASS);
   for (const tooltip of findAllByClasses(price, ['cursor-help']))
     tooltip.classList.add(HIDDEN_CLASS);
   for (const button of price.querySelectorAll('button')) add(button, 'pay');
