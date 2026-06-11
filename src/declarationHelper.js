@@ -44,7 +44,7 @@ const ITEM_COST_RE = /item cost|cost|ღირებულება|стоимо
 const SENDER_ORIGIN_RE = /sender origin|origin site|website|საიტი|გამომგზავნ|отправител|сайт/i;
 const OTHER_RE = /other|uncertain|unknown|სხვა|გაურკვეველი|უცნობი|другое|прочее|неизвест/i;
 const REMEMBERED_COUNTRY_TTL = 10_000;
-const DEBUG_PREFIX = '[inex declaration]';
+const HIDDEN_AI_ATTRIBUTE = 'data-inex-ai-hidden';
 const CATEGORY_STYLE = `
 .custom-select[data-inex-category-label] {
   position: relative;
@@ -139,7 +139,6 @@ function bindDeclarationClicks() {
 
       const text = normalizeText(control.textContent || '');
       if (isParcelsPath() && AI_INVOICE_FLOW_RE.test(text) && !MANUAL_INVOICE_RE.test(text)) {
-        debug('blocked ai invoice flow click', { text });
         event.preventDefault();
         event.stopImmediatePropagation();
         hideAiDeclarationButtons(getDeclarationRoot());
@@ -172,14 +171,10 @@ function enhanceDeclarationSetup() {
   fillQuantityDefaults(form);
   syncAmountFields(form);
   defaultCustomSelect(form, CATEGORY_RE, OTHER_RE, 'other', true);
-  if (shouldLeaveFormAlone()) {
-    debug('leave form alone after user input', getFormDebugInfo(form));
-    return;
-  }
+  if (shouldLeaveFormAlone()) return;
 
   const countryCode = detectCountryCode(form);
   const defaults = COUNTRY_DEFAULTS[countryCode] || {};
-  debug('form detected', { countryCode, defaults, ...getFormDebugInfo(form) });
 
   fillSenderOrigin(form, defaults.origin);
   defaultCustomSelect(
@@ -217,7 +212,7 @@ function loadCategoryTranslations() {
       }
       scheduleDeclarationHelper();
     })
-    .catch((error) => debug('category translations failed', { error: error.message }));
+    .catch(() => {});
 
   return categoryTranslationsLoading;
 }
@@ -358,21 +353,26 @@ function hideAiDeclarationButtons(root) {
     if (!AI_DECLARATION_RE.test(text) && !AI_INVOICE_FLOW_RE.test(text)) continue;
     if (MANUAL_INVOICE_RE.test(text)) continue;
 
-    debug('remove ai invoice control', { text });
     button.remove();
   }
 
   for (const element of [...root.querySelectorAll('*')]) {
     if (element.children.length || !(element instanceof HTMLElement)) continue;
+    if (isFormControl(element)) continue;
 
     const text = normalizeText(element.textContent || '');
+    if (element.getAttribute(HIDDEN_AI_ATTRIBUTE) === text) continue;
     if (!AI_DECLARATION_RE.test(text) && !AI_INVOICE_FLOW_RE.test(text)) continue;
     if (MANUAL_INVOICE_RE.test(text)) continue;
 
-    debug('hide ai invoice text', { text });
     element.style.setProperty('display', 'none', 'important');
     element.setAttribute('aria-hidden', 'true');
+    element.setAttribute(HIDDEN_AI_ATTRIBUTE, text);
   }
+}
+
+function isFormControl(element) {
+  return element.matches('input, textarea, select, option, [contenteditable="true"]');
 }
 
 function clickManualInvoice(root) {
@@ -398,7 +398,6 @@ function clickManualInvoice(root) {
   );
   if (manualButton && !clickedManualButtons.has(manualButton)) {
     clickedManualButtons.add(manualButton);
-    debug('click manual invoice', { text: normalizeText(manualButton.textContent || '') });
     manualButton.click();
   }
 }
@@ -416,7 +415,6 @@ function fillQuantityDefaults(form) {
     defaultedFields.add(input);
     if (!isBlankOrZero(input)) continue;
 
-    debug('default quantity', getFieldDebugInfo(input));
     setFieldValue(input, '1');
   }
 }
@@ -430,7 +428,6 @@ function fillSenderOrigin(form, origin) {
   defaultedFields.add(input);
   if (getFieldValue(input)) return;
 
-  debug('default sender origin', { origin, ...getFieldDebugInfo(input) });
   setFieldValue(input, origin);
 }
 
@@ -465,7 +462,6 @@ function syncTotalFromItems(form) {
   const totalValue = formatAmount(sum);
   if (getFieldValue(total) === totalValue) return;
 
-  debug('sync total from parcel items', { totalValue });
   setFieldValue(total, totalValue);
 }
 
@@ -496,15 +492,15 @@ function formatAmount(value) {
     .replace(/(\.\d)0$/, '$1');
 }
 
-function defaultCustomSelect(form, labelPattern, optionPattern, debugValue) {
+function defaultCustomSelect(form, labelPattern, optionPattern) {
   if (!optionPattern) return;
 
   for (const select of findCustomSelects(form, labelPattern)) {
-    defaultSingleCustomSelect(select, optionPattern, debugValue);
+    defaultSingleCustomSelect(select, optionPattern);
   }
 }
 
-function defaultSingleCustomSelect(select, optionPattern, debugValue) {
+function defaultSingleCustomSelect(select, optionPattern) {
   const input = select.querySelector('input');
   const currentValue = getFieldValue(input);
   const hasError = !!select.parentElement?.querySelector('[class*="text-error"]');
@@ -518,12 +514,11 @@ function defaultSingleCustomSelect(select, optionPattern, debugValue) {
   const trigger = select.firstElementChild;
   if (!(trigger instanceof HTMLElement)) return;
 
-  debug('open select for default', { label: debugValue, attempts });
   trigger.click();
-  setTimeout(() => clickSelectOption(select, optionPattern, debugValue), 120);
+  setTimeout(() => clickSelectOption(select, optionPattern), 120);
 }
 
-function clickSelectOption(select, optionPattern, debugValue) {
+function clickSelectOption(select, optionPattern) {
   if (!select.isConnected || shouldLeaveFormAlone()) return;
 
   const option = getVisibleSelectOption(optionPattern);
@@ -532,7 +527,6 @@ function clickSelectOption(select, optionPattern, debugValue) {
     return;
   }
 
-  debug('select default option', { label: debugValue, option: getOptionText(option) });
   option.click();
 }
 
@@ -647,11 +641,6 @@ function rememberCountryFrom(control) {
   const code = getCountryFromOriginAttribute(row) || getCountryFromText(row?.textContent || '');
   lastCountryCode = code;
   lastCountryRememberedAt = Date.now();
-  debug('declaration click', {
-    countryCode: code,
-    tracking: getRowTracking(row),
-    button: normalizeText(control.textContent || ''),
-  });
 }
 
 function detectCountryCode(form) {
@@ -708,33 +697,4 @@ function cssEscape(value) {
   if (window.CSS?.escape) return CSS.escape(value);
 
   return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
-}
-
-function getFormDebugInfo(form) {
-  return {
-    fields: [...form.querySelectorAll('input, textarea')].map(getFieldDebugInfo),
-    text: normalizeText(form.textContent || '').slice(0, 500),
-  };
-}
-
-function getFieldDebugInfo(field) {
-  return {
-    name: field.getAttribute('name') || '',
-    type: field.getAttribute('type') || '',
-    placeholder: field.getAttribute('placeholder') || '',
-    value: getFieldValue(field),
-    context: getFieldContextText(field),
-  };
-}
-
-function getRowTracking(row) {
-  return (
-    row?.querySelector('[data-inex-tracking-code]')?.getAttribute('data-inex-tracking-code') ||
-    normalizeText(row?.textContent || '').match(/[A-Z0-9]{10,}(?=[^A-Z0-9]|$)/)?.[0] ||
-    ''
-  );
-}
-
-function debug(message, data) {
-  console.debug(DEBUG_PREFIX, message, data || '');
 }

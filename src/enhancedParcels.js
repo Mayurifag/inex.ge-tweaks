@@ -6,43 +6,66 @@ import {
   GM_unregisterMenuCommand,
 } from '$';
 import enhancedParcelsCss from './enhancedParcels.css?raw';
-
-const STORAGE_KEY = 'inex_enhanced_parcels_enabled';
-const FILTER_STORAGE_KEY = 'parcels_filter_open';
-const CACHE_STORAGE_KEY = 'inex_enhanced_parcels_data_v4';
-const ROOT_CLASS = 'inex-enhanced-parcels';
-const HIDDEN_CLASS = 'inex-enhanced-hidden';
-const CONTENTS_CLASS = 'inex-enhanced-parcels__contents';
-const SECTION_CLASS = 'inex-enhanced-parcels__section';
-const SECTION_COLLAPSED_CLASS = 'inex-enhanced-parcels__row--section-collapsed';
-const SIDE_CLASS = 'inex-enhanced-parcels__side';
-const ACTIONS_CLASS = 'inex-enhanced-parcels__actions';
-const TRACKING_CODE_ATTRIBUTE = 'data-inex-tracking-code';
-const DESCRIPTION_ATTRIBUTE = 'data-inex-description';
-const ORIGIN_ATTRIBUTE = 'data-inex-origin';
-const DETAIL_USER_FIELD_ATTRIBUTE = 'data-inex-user-detail-hidden';
-const TAKEOUT_STATUS = '5';
-const TAKEOUT_RE = /^(?:Takeout|Taken\s*Out|გატანილი|Забрано|Выдано)$/i;
-const ARRIVED_RE = /^(?:Arrived|ჩამოსულ(?:ია|ი)?|Прибыл|Прибыло)$/i;
-const BATUMI_RE = /batumi|ბათუმ|батуми/i;
-const USER_DETAIL_LABEL_RE =
-  /^(?:User|Customer|Receiver Client|Subuser|Trustee|მომხმარებელი|მიმღები მომხმარებელი|ქვემომხმარებელი|მინდობილი პირი)(?:\s*[/|]\s*(?:User|Customer|Receiver Client|Subuser|Trustee|მომხმარებელი|მიმღები მომხმარებელი|ქვემომხმარებელი|მინდობილი პირი))*:?$/i;
-const SYSTEM_USER_RE =
-  /^(?:System|System user|Current user|სისტემა|სისტემური მომხმარებელი|მიმდინარე მომხმარებელი)$/i;
-const ROW_SELECTOR =
-  'div[class*="cursor-pointer"][class*="bg-additional-background-2"][class*="p-4"][class*="lg:flex-row"]';
-const GROUP_SELECTOR = 'div[class*="mt-2"][class*="px-2.5"]';
-const API_BASE = 'https://inex.ge/api/v1';
-const DATA_TTL = 5 * 60_000;
-const EVENT_FETCH_CONCURRENCY = 6;
-const OBSERVED_ATTRIBUTES = ['class', 'style', 'disabled', 'aria-disabled', 'data-state', 'hidden'];
-const DECLARATION_MODAL_RE =
-  /add declaration|update declaration|upload invoice|ai declaration|by hand|დეკლარ|ინვოის|деклар|инвойс/i;
-const DECLARATION_ACTION_RE = /declaration|declare\b|დეკლარ|деклар/i;
-const DECLARATION_STATUS_RE = /^(?:Not Declared|არ არის დეკლარირებული|Не декларировано)$/i;
-const PARCEL_DETAILS_MODAL_RE =
-  /details|processes|parcel content|additional information|დეტალ|პროცეს|ამანათ|детал|процесс|посыл/i;
-const DECLARATION_DEBUG_PREFIX = '[inex declaration]';
+import {
+  ACTIONS_CLASS,
+  ARRIVED_RE,
+  BATUMI_RE,
+  DECLARATION_ACTION_RE,
+  DECLARATION_STATUS_RE,
+  DESCRIPTION_ATTRIBUTE,
+  DETAIL_USER_FIELD_ATTRIBUTE,
+  FILTER_STORAGE_KEY,
+  GROUP_SELECTOR,
+  HIDDEN_CLASS,
+  OBSERVED_ATTRIBUTES,
+  ORIGIN_ATTRIBUTE,
+  ROOT_CLASS,
+  ROW_SELECTOR,
+  SIDE_CLASS,
+  STORAGE_KEY,
+  SYSTEM_USER_RE,
+  TAKEOUT_RE,
+  TAKEOUT_STATUS,
+  TRACKING_CODE_ATTRIBUTE,
+  USER_DETAIL_LABEL_RE,
+} from './enhancedParcels/constants.js';
+import {
+  bindDeclarationDomRestore,
+  bindDeclarationEscapeDismiss,
+  bindDeclarationRowClicks,
+  bindDeclarationSubmitReload,
+  enterDeclarationFormIfOpen,
+  isDeclarationFormOpen,
+  isDeclarationUiBlockingEnhancement,
+  moveElement,
+  pruneMovedElements,
+} from './enhancedParcels/declarationDom.js';
+import {
+  add,
+  areAllChildrenHidden,
+  findAllByClasses,
+  findAllByText,
+  findByClasses,
+  normalizeText,
+  onReady,
+  setTextContent,
+} from './enhancedParcels/dom.js';
+import {
+  clearParcelDataCache,
+  DATA_TTL,
+  loadParcelData,
+  parseDate,
+  readParcelDataCache,
+  writeParcelDataCache,
+} from './enhancedParcels/parcelData.js';
+import {
+  getOriginLabel,
+  getOriginTooltip,
+  getOriginTransportType,
+  hasOriginInfo,
+  mergeCountryInfo,
+} from './enhancedParcels/origin.js';
+import { renderRowSections } from './enhancedParcels/rowSections.js';
 
 let menuCommandId;
 let observer;
@@ -50,28 +73,15 @@ let trimRaf;
 let parcelDataPromise;
 let parcelDataFetchedAt = 0;
 let parcelInfoByTracking = new Map();
-let rowOrderCounter = 0;
-const rowOrders = new WeakMap();
-const collapsedSections = new Set();
-const movedElements = new Set();
-const originalPositions = new WeakMap();
-let declarationRestoreBound = false;
-let declarationRowClicksBound = false;
-let declarationFetchDebugBound = false;
-let declarationUiOpen = false;
-let declarationFormSeen = false;
-let replayingDeclarationClick = false;
-let lastDeclarationFormOpen = false;
-let lastDeclarationTarget = null;
 
 export function applyEnhancedParcels() {
   GM_addStyle(enhancedParcelsCss);
   registerMenuCommand();
   patchHistory();
-  bindDeclarationDomRestore();
-  bindDeclarationRowClicks();
-  bindDeclarationEscapeDismiss();
-  bindDeclarationFetchDebug();
+  bindDeclarationDomRestore({ getRowDeclarationButton, refreshParcelDataSoon });
+  bindDeclarationRowClicks({ isParcelsPath, getRowDeclarationButton });
+  bindDeclarationEscapeDismiss(isParcelsPath);
+  bindDeclarationSubmitReload();
   updateEnhancedParcels();
   onReady(() => {
     observeDom();
@@ -80,236 +90,10 @@ export function applyEnhancedParcels() {
   window.addEventListener('popstate', updateEnhancedParcels);
 }
 
-function bindDeclarationRowClicks() {
-  if (declarationRowClicksBound) return;
-
-  declarationRowClicksBound = true;
-  document.addEventListener(
-    'click',
-    (event) => {
-      if (!isParcelsPath() || isDeclarationFormOpen()) return;
-
-      const target = event.target instanceof Element ? event.target : null;
-      if (!target || isInteractiveTarget(target)) return;
-
-      const row = target.closest(ROW_SELECTOR);
-      const button = row && getRowDeclarationButton(row);
-      if (!button) return;
-
-      rememberDeclarationTarget(row, 'row click routed to declaration button');
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      button.click();
-    },
-    true,
-  );
-}
-
-function bindDeclarationEscapeDismiss() {
-  document.addEventListener(
-    'keydown',
-    (event) => {
-      if (
-        event.key !== 'Escape' ||
-        !isParcelsPath() ||
-        (!isDeclarationFormOpen() && !isParcelDetailsModalOpen())
-      ) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      location.reload();
-    },
-    true,
-  );
-}
-
-function bindDeclarationFetchDebug() {
-  if (declarationFetchDebugBound) return;
-
-  declarationFetchDebugBound = true;
-  patchDeclarationXhrDebug();
-  const nativeFetch = window.fetch;
-  window.fetch = async (...args) => {
-    const startedAt = performance.now();
-    const info = getFetchDebugInfo(args);
-    const shouldDebug = shouldDebugDeclarationFetch(info);
-
-    if (shouldDebug) debugDeclaration('fetch start', info);
-
-    try {
-      const response = await nativeFetch.apply(window, args);
-      if (shouldDebug) {
-        debugDeclaration('fetch response', {
-          ...info,
-          ms: Math.round(performance.now() - startedAt),
-          status: response.status,
-          ok: response.ok,
-          body: await readResponseDebugBody(response),
-        });
-      }
-      return response;
-    } catch (error) {
-      if (shouldDebug) {
-        debugDeclaration('fetch error', {
-          ...info,
-          ms: Math.round(performance.now() - startedAt),
-          error: error.message,
-        });
-      }
-      throw error;
-    }
-  };
-}
-
-function patchDeclarationXhrDebug() {
-  if (XMLHttpRequest.prototype.inexDeclarationDebugPatched) return;
-
-  XMLHttpRequest.prototype.inexDeclarationDebugPatched = true;
-  const nativeOpen = XMLHttpRequest.prototype.open;
-  const nativeSend = XMLHttpRequest.prototype.send;
-
-  XMLHttpRequest.prototype.open = function openWithDeclarationDebug(method, url, ...rest) {
-    this.inexDeclarationDebugInfo = {
-      method: String(method || 'GET').toUpperCase(),
-      url: getDebugUrl(url),
-      declarationFormOpen: isDeclarationFormOpen(),
-      declarationTarget: lastDeclarationTarget,
-    };
-    return nativeOpen.call(this, method, url, ...rest);
-  };
-
-  XMLHttpRequest.prototype.send = function sendWithDeclarationDebug(body) {
-    const startedAt = performance.now();
-    const info = {
-      ...(this.inexDeclarationDebugInfo || {}),
-      body: getRequestDebugBody(body),
-      declarationFormOpen: isDeclarationFormOpen(),
-      declarationTarget: lastDeclarationTarget,
-    };
-    const shouldDebug = shouldDebugDeclarationFetch(info);
-
-    if (shouldDebug) {
-      debugDeclaration('xhr start', info);
-      this.addEventListener('loadend', () => {
-        const ok = this.status >= 200 && this.status < 300;
-        debugDeclaration('xhr response', {
-          ...info,
-          ms: Math.round(performance.now() - startedAt),
-          status: this.status,
-          ok,
-          body: getXhrResponseDebugBody(this),
-        });
-        if (ok && isDeclarationSubmitUrl(info.url)) reloadParcelsAfterDeclaration(info);
-      });
-    }
-
-    return nativeSend.call(this, body);
-  };
-}
-
-function isDeclarationSubmitUrl(url) {
-  return /\/front\/cabinet\/parcels\/\d+\/declare$/.test(url);
-}
-
-function reloadParcelsAfterDeclaration(info) {
-  debugDeclaration('reload parcels after declaration success', info);
-  setTimeout(() => location.reload(), 100);
-}
-
-function getFetchDebugInfo(args) {
-  const [resource, init = {}] = args;
-  const request = resource instanceof Request ? resource : null;
-  const url = request?.url || String(resource || '');
-  const method = (init.method || request?.method || 'GET').toUpperCase();
-  return {
-    method,
-    url: getDebugUrl(url),
-    body: getRequestDebugBody(init.body),
-    declarationFormOpen: isDeclarationFormOpen(),
-    declarationTarget: lastDeclarationTarget,
-  };
-}
-
-function shouldDebugDeclarationFetch(info) {
-  const text = `${info.url} ${info.body}`;
-  return (
-    isParcelsPath() &&
-    (/declar|invoice|ინვოის|დეკლარ/i.test(text) ||
-      (info.declarationFormOpen && info.method !== 'GET'))
-  );
-}
-
-function getDebugUrl(value) {
-  try {
-    const url = new URL(value, location.href);
-    return `${url.pathname}${url.search}`;
-  } catch {
-    return value;
-  }
-}
-
-function getRequestDebugBody(body) {
-  if (!body) return '';
-  if (typeof body === 'string') return truncateDebugText(body);
-  if (body instanceof URLSearchParams) return truncateDebugText(body.toString());
-  if (body instanceof FormData) return getFormDataDebugBody(body);
-  return Object.prototype.toString.call(body);
-}
-
-function getFormDataDebugBody(body) {
-  const entries = [];
-  for (const [key, value] of body.entries()) {
-    entries.push([key, value instanceof File ? `[file:${value.name}:${value.size}]` : value]);
-  }
-  return entries;
-}
-
-async function readResponseDebugBody(response) {
-  const contentType = response.headers.get('content-type') || '';
-  if (!/json|text|html/i.test(contentType)) return '';
-
-  try {
-    return truncateDebugText(await response.clone().text());
-  } catch (error) {
-    return `[unreadable: ${error.message}]`;
-  }
-}
-
-function getXhrResponseDebugBody(xhr) {
-  const contentType = xhr.getResponseHeader('content-type') || '';
-  if (!/json|text|html/i.test(contentType)) return '';
-
-  try {
-    return typeof xhr.responseText === 'string' ? truncateDebugText(xhr.responseText) : '';
-  } catch (error) {
-    return `[unreadable: ${error.message}]`;
-  }
-}
-
-function truncateDebugText(value) {
-  return String(value).slice(0, 2000);
-}
-
-function isInteractiveTarget(target) {
-  return !!target.closest(
-    'button, a, input, textarea, select, label, [role="button"], [role="link"], [contenteditable="true"]',
-  );
-}
-
 function getRowDeclarationButton(row) {
   return [...row.querySelectorAll('button, [role="button"]')].find((button) =>
     DECLARATION_ACTION_RE.test(normalizeText(button.textContent || '')),
   );
-}
-
-function onReady(callback) {
-  if (document.body) {
-    callback();
-    return;
-  }
-  document.addEventListener('DOMContentLoaded', callback, { once: true });
 }
 
 function isParcelsPath() {
@@ -383,6 +167,7 @@ function observeDom() {
 
   observer = new MutationObserver((mutations) => {
     if (mutations.every(isOwnAttributeMutation)) return;
+    if (isDeclarationFormOpen() && mutations.every(isDeclarationFormMutation)) return;
 
     scheduleEnhance();
   });
@@ -411,6 +196,12 @@ function isOwnAttributeMutation(mutation) {
   }
 
   return false;
+}
+
+function isDeclarationFormMutation(mutation) {
+  const target =
+    mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+  return !!target?.closest('form') && isDeclarationFormOpen();
 }
 
 function areClassListsEqualWithoutOwn(a, b) {
@@ -456,26 +247,8 @@ function scheduleEnhance() {
 function enhanceParcelsDom() {
   ensureParcelData();
 
-  const declarationFormOpen = isDeclarationFormOpen();
-  if (declarationFormOpen !== lastDeclarationFormOpen) {
-    lastDeclarationFormOpen = declarationFormOpen;
-    debugDeclaration('declaration form visibility changed', {
-      open: declarationFormOpen,
-      ...getDeclarationDebugState(document.body),
-    });
-  }
-
-  if (declarationFormOpen) {
-    declarationFormSeen = true;
-    return;
-  }
-
-  if (declarationUiOpen && declarationFormSeen) {
-    declarationUiOpen = false;
-    declarationFormSeen = false;
-  } else if (declarationUiOpen) {
-    return;
-  }
+  if (enterDeclarationFormIfOpen()) return;
+  if (isDeclarationUiBlockingEnhancement()) return;
 
   enhanceChrome();
   enhanceTabsAndPanel();
@@ -485,183 +258,14 @@ function enhanceParcelsDom() {
   enhanceParcelDetails();
 }
 
-function bindDeclarationDomRestore() {
-  if (declarationRestoreBound) return;
-
-  declarationRestoreBound = true;
-  document.addEventListener(
-    'click',
-    (event) => {
-      const target = event.target instanceof Element ? event.target : null;
-      const control = target?.closest('button, a, [role="button"], [class*="cursor-pointer"]');
-      const text = normalizeText(control?.textContent || '');
-      if (DECLARATION_ACTION_RE.test(text)) {
-        if (!replayingDeclarationClick) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          openDeclarationFromRestoredRow(control);
-          return;
-        }
-
-        declarationUiOpen = true;
-        debugDeclaration('declaration open click', getDeclarationDebugState(control));
-      }
-    },
-    true,
-  );
-  document.addEventListener(
-    'submit',
-    (event) => {
-      if (
-        event.target instanceof Element &&
-        DECLARATION_MODAL_RE.test(event.target.textContent || '')
-      ) {
-        const beforeRows = getVisibleRowDebugInfo();
-        debugDeclaration(
-          'restore before declaration submit',
-          getDeclarationSubmitDebugInfo(event, beforeRows),
-        );
-        restoreMovedParcelDom();
-        declarationUiOpen = false;
-        declarationFormSeen = false;
-        refreshParcelDataSoon();
-        setTimeout(
-          () =>
-            debugDeclaration('after declaration submit tick', {
-              ...getDeclarationSubmitDebugInfo(event, beforeRows),
-              rowDiff: getRowsDebugDiff(beforeRows, getVisibleRowDebugInfo()),
-            }),
-          1000,
-        );
-      }
-    },
-    true,
-  );
-}
-
-function openDeclarationFromRestoredRow(control) {
-  const row = control?.closest(ROW_SELECTOR);
-  if (!row) {
-    debugDeclaration(
-      'declaration replay skipped: row not found',
-      getDeclarationDebugState(control),
-    );
-    return;
-  }
-
-  rememberDeclarationTarget(row, 'declaration target selected');
-  debugDeclaration('restore before declaration replay', getDeclarationDebugState(control));
-  restoreMovedParcelDom(row);
-
-  const button = getRowDeclarationButton(row);
-  if (!button) {
-    debugDeclaration('declaration replay skipped: button not found', getDeclarationDebugState(row));
-    return;
-  }
-
-  declarationUiOpen = true;
-  replayingDeclarationClick = true;
-  try {
-    button.click();
-  } finally {
-    replayingDeclarationClick = false;
-  }
-}
-
-function isDeclarationFormOpen() {
-  const modalText = document.getElementById('modal-root')?.textContent || '';
-  if (DECLARATION_MODAL_RE.test(modalText)) return true;
-
-  return [...document.querySelectorAll('form')].some((form) =>
-    DECLARATION_MODAL_RE.test(form.textContent || ''),
-  );
-}
-
-function isParcelDetailsModalOpen() {
-  return [...document.querySelectorAll('div[class*="fixed"][class*="inset-0"]')].some(
-    (element) =>
-      element instanceof HTMLElement &&
-      element.getBoundingClientRect().height > 0 &&
-      PARCEL_DETAILS_MODAL_RE.test(element.textContent || ''),
-  );
-}
-
-function rememberMovedElement(element) {
-  if (!element || originalPositions.has(element)) return;
-
-  originalPositions.set(element, {
-    parent: element.parentNode,
-    nextSibling: element.nextSibling,
-  });
-  movedElements.add(element);
-}
-
-function moveElement(element, parent) {
-  if (!element || !parent || element.parentElement === parent) return;
-
-  rememberMovedElement(element);
-  parent.append(element);
-}
-
-function restoreMovedParcelDom(scope = document) {
-  let restored = 0;
-  for (const element of [...movedElements]) {
-    if (scope !== document && !scope?.contains(element)) continue;
-
-    const position = originalPositions.get(element);
-    movedElements.delete(element);
-    originalPositions.delete(element);
-    if (!position?.parent?.isConnected || !element.isConnected) continue;
-
-    const nextSibling =
-      position.nextSibling?.parentNode === position.parent ? position.nextSibling : null;
-    if (element.parentNode !== position.parent || element.nextSibling !== nextSibling) {
-      position.parent.insertBefore(element, nextSibling);
-      restored++;
-    }
-  }
-
-  for (const element of scope.querySelectorAll(
-    `.${SIDE_CLASS}, .${SECTION_CLASS}, .inex-enhanced-parcels__status-cell, .${ACTIONS_CLASS}`,
-  )) {
-    element.remove();
-  }
-  debugDeclaration('restore moved parcel dom', {
-    restored,
-    moved: movedElements.size,
-    scoped: scope !== document,
-  });
-}
-
 function refreshParcelDataSoon() {
-  const beforeRows = getVisibleRowDebugInfo();
   setTimeout(() => {
-    debugDeclaration('refresh parcel data after declaration submit');
-    localStorage.removeItem(CACHE_STORAGE_KEY);
+    clearParcelDataCache();
     parcelInfoByTracking = new Map();
     parcelDataFetchedAt = 0;
     ensureParcelData();
     scheduleEnhance();
-    setTimeout(
-      () =>
-        debugDeclaration('rows after parcel data refresh', {
-          declarationTarget: lastDeclarationTarget,
-          rowDiff: getRowsDebugDiff(beforeRows, getVisibleRowDebugInfo()),
-          rows: getVisibleRowDebugInfo(),
-        }),
-      1000,
-    );
   }, 1500);
-}
-
-function pruneMovedElements() {
-  for (const element of [...movedElements]) {
-    const position = originalPositions.get(element);
-    if (element.isConnected && position?.parent?.isConnected) continue;
-
-    movedElements.delete(element);
-    originalPositions.delete(element);
-  }
 }
 
 function enhanceChrome() {
@@ -786,7 +390,7 @@ function enhanceRows() {
   const visibleRows = rows.filter((row) => !row.classList.contains(HIDDEN_CLASS));
 
   inferMissingOrigins(visibleRows);
-  renderRowSections(visibleRows);
+  renderRowSections(visibleRows, { getRowSortInfo, getEtaTime, scheduleEnhance });
 
   hideEmptyGroups();
   hideEmptyFlights();
@@ -987,153 +591,6 @@ function hideEmptyFlights() {
   }
 }
 
-function renderRowSections(rows) {
-  const panel =
-    rows[0]?.closest('.inex-enhanced-parcels__panel') ||
-    document.querySelector('.inex-enhanced-parcels__panel');
-  if (!panel) return;
-
-  for (const row of rows) {
-    if (panel.contains(row)) flattenRowAncestors(row, panel);
-  }
-
-  const sections = getRowSections([...rows].sort(compareRows));
-  removeUnusedSectionDividers(
-    panel,
-    sections.map((section) => section.type),
-  );
-
-  let order = 10;
-  let dividerAnchor = panel.querySelector(':scope > .inex-enhanced-parcels__panel-header');
-  for (const section of sections) {
-    const collapsed = collapsedSections.has(section.type);
-    const divider = getSectionDivider(
-      panel,
-      section.type,
-      section.label,
-      section.rows.length,
-      collapsed,
-    );
-
-    placeSectionDivider(panel, divider, dividerAnchor);
-    dividerAnchor = divider;
-    divider.style.order = String(order++);
-    for (const row of section.rows) {
-      row.style.order = String(order++);
-      row.classList.toggle(SECTION_COLLAPSED_CLASS, collapsed);
-      orderRowDetails(row, order++, collapsed);
-    }
-  }
-}
-
-function placeSectionDivider(parent, divider, anchor) {
-  const nextSibling = anchor?.nextSibling || parent.firstChild;
-  if (nextSibling !== divider) parent.insertBefore(divider, nextSibling);
-}
-
-function flattenRowAncestors(row, root) {
-  let element = row.parentElement;
-
-  while (element && element !== root) {
-    element.classList.add(CONTENTS_CLASS);
-    element = element.parentElement;
-  }
-}
-
-function orderRowDetails(row, order, collapsed) {
-  let element = row.nextElementSibling;
-
-  while (element && !element.matches?.(ROW_SELECTOR)) {
-    if (!element.classList.contains(SECTION_CLASS)) {
-      element.style.order = String(order);
-      element.classList.toggle(SECTION_COLLAPSED_CLASS, collapsed);
-    }
-    element = element.nextElementSibling;
-  }
-}
-
-function getRowSections(rows) {
-  const sections = [
-    { type: 'arrived', label: 'Arrived', rows: [] },
-    { type: 'active', label: 'In progress', rows: [] },
-  ];
-
-  for (const row of rows) {
-    if (getRowSortInfo(row).arrived) {
-      sections[0].rows.push(row);
-    } else {
-      sections[1].rows.push(row);
-    }
-  }
-
-  return sections.filter((section) => section.rows.length);
-}
-
-function getSectionDivider(parent, type, label, count, collapsed) {
-  let divider = parent.querySelector(`:scope > .${SECTION_CLASS}[data-section="${type}"]`);
-
-  if (!divider) {
-    divider = document.createElement('div');
-    divider.className = SECTION_CLASS;
-    divider.dataset.section = type;
-    divider.tabIndex = 0;
-    divider.setAttribute('role', 'button');
-    divider.addEventListener('click', () => toggleSection(type));
-    divider.addEventListener('keydown', (event) => {
-      if (![' ', 'Enter'].includes(event.key)) return;
-
-      event.preventDefault();
-      toggleSection(type);
-    });
-    parent.append(divider);
-  }
-
-  setTextContent(divider, `${label} · ${count}`);
-  divider.setAttribute('aria-expanded', String(!collapsed));
-  return divider;
-}
-
-function removeUnusedSectionDividers(parent, types) {
-  for (const divider of document.querySelectorAll(`.${SECTION_CLASS}`)) {
-    if (divider.parentElement !== parent || !types.includes(divider.dataset.section)) {
-      divider.remove();
-    }
-  }
-}
-
-function toggleSection(type) {
-  if (collapsedSections.has(type)) {
-    collapsedSections.delete(type);
-  } else {
-    collapsedSections.add(type);
-  }
-
-  scheduleEnhance();
-}
-
-function compareRows(a, b) {
-  const sortA = getRowSortInfo(a);
-  const sortB = getRowSortInfo(b);
-
-  const bucketDiff = getRowBucket(sortA) - getRowBucket(sortB);
-  if (bucketDiff) return bucketDiff;
-
-  if (sortA.arrived && sortB.arrived) return getRowOrder(a) - getRowOrder(b);
-
-  const processDiff = sortB.eventCount - sortA.eventCount;
-  if (processDiff) return processDiff;
-
-  const etaDiff = getEtaTime(sortA.info) - getEtaTime(sortB.info);
-  if (etaDiff) return etaDiff;
-
-  return getRowOrder(a) - getRowOrder(b);
-}
-
-function getRowBucket(sortInfo) {
-  if (sortInfo.arrived) return 0;
-  return sortInfo.eventCount > 0 ? 1 : 2;
-}
-
 function getRowSortInfo(row) {
   const info = getRowParcelInfo(row);
   const status = row.querySelector('.inex-enhanced-parcels__status');
@@ -1161,11 +618,6 @@ function getEventCount(info) {
 function getEtaTime(info) {
   const time = parseDate(info?.expectedArrival)?.getTime();
   return Number.isFinite(time) ? time : Number.POSITIVE_INFINITY;
-}
-
-function getRowOrder(row) {
-  if (!rowOrders.has(row)) rowOrders.set(row, rowOrderCounter++);
-  return rowOrders.get(row);
 }
 
 function updateProcessLine(statusCell, status, info, arrived) {
@@ -1425,85 +877,6 @@ function storeOriginInfo(row, origin) {
   row.setAttribute(ORIGIN_ATTRIBUTE, JSON.stringify(origin));
 }
 
-function hasOriginInfo(origin) {
-  return Boolean(
-    origin?.countryCode || origin?.countryName || origin?.transportName || origin?.transportType,
-  );
-}
-
-function getOriginLabel(origin) {
-  const flag = getCountryFlag(origin);
-  const transport = getTransportEmoji(getOriginTransportType(origin));
-  if (flag || transport) return [flag, transport].filter(Boolean).join(' ');
-
-  const labels = { air: 'Air', road: 'Road', sea: 'Sea' };
-  return labels[getOriginTransportType(origin)] || origin.transportName || '';
-}
-
-function getTransportEmoji(transportType) {
-  const icons = { air: '✈️', road: '🚚', sea: '🚢' };
-  return icons[transportType] || '';
-}
-
-function getCountryFlag(origin) {
-  const code = getFlagCountryCode(origin?.countryCode || getCountryCodeByName(origin?.countryName));
-  if (!/^[A-Z]{2}$/.test(code)) return '';
-
-  return [...code]
-    .map((letter) => String.fromCodePoint(0x1f1e6 + letter.charCodeAt(0) - 65))
-    .join('');
-}
-
-function getFlagCountryCode(code) {
-  if (!code) return '';
-
-  const normalized = code.trim().toUpperCase();
-  return normalized === 'UK' ? 'GB' : normalized;
-}
-
-function getCountryCodeByName(countryName) {
-  const countries = {
-    USA: 'US',
-    'United States': 'US',
-    'United Kingdom': 'GB',
-    China: 'CN',
-    Turkey: 'TR',
-    Germany: 'DE',
-    Greece: 'GR',
-    Italy: 'IT',
-    Spain: 'ES',
-    Poland: 'PL',
-    Cyprus: 'CY',
-    Georgia: 'GE',
-  };
-
-  return countries[countryName] || '';
-}
-
-function getOriginTransportType(origin) {
-  const transportType = normalizeTransportType(origin?.transportType);
-  if (transportType) return transportType;
-
-  const transportName = origin?.transportName || '';
-  if (/air|flight|plane/i.test(transportName)) return 'air';
-  if (/road|ground|land|truck|car/i.test(transportName)) return 'road';
-  if (/sea|ocean|ship/i.test(transportName)) return 'sea';
-
-  return '';
-}
-
-function normalizeTransportType(value) {
-  const types = { 1: 'air', 4: 'road', air: 'air', road: 'road', sea: 'sea' };
-  const key = String(value || '')
-    .trim()
-    .toLowerCase();
-  return types[key] || '';
-}
-
-function getOriginTooltip(origin) {
-  return [origin.countryName, origin.transportName].filter(Boolean).join(' · ');
-}
-
 function getDescriptionSource(body, tracking, status) {
   if (!body) return null;
 
@@ -1552,123 +925,6 @@ function matchesStatusText(element, pattern) {
   return pattern.test(normalizeText(element?.textContent || ''));
 }
 
-function normalizeText(text) {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
-function getDeclarationDebugState(source) {
-  const row = source?.closest?.(ROW_SELECTOR);
-  return {
-    sourceText: normalizeText(source?.textContent || '').slice(0, 300),
-    declarationFormOpen: isDeclarationFormOpen(),
-    movedElements: movedElements.size,
-    row: row ? getRowDebugInfo(row) : null,
-    declarationTarget: lastDeclarationTarget,
-    visibleRows: getVisibleRowDebugInfo(),
-    modalText: normalizeText(document.getElementById('modal-root')?.textContent || '').slice(
-      0,
-      500,
-    ),
-  };
-}
-
-function rememberDeclarationTarget(row, message) {
-  lastDeclarationTarget = row ? getRowDebugInfo(row) : null;
-  debugDeclaration(message, {
-    declarationTarget: lastDeclarationTarget,
-    visibleRows: getVisibleRowDebugInfo(),
-  });
-}
-
-function getDeclarationSubmitDebugInfo(event, beforeRows) {
-  const form = event.target;
-  return {
-    ...getDeclarationDebugState(form),
-    submitter: normalizeText(
-      event.submitter?.textContent || document.activeElement?.textContent || '',
-    ).slice(0, 200),
-    defaultPrevented: event.defaultPrevented,
-    fields: getFormFieldsDebugInfo(form),
-    beforeRows,
-  };
-}
-
-function getFormFieldsDebugInfo(form) {
-  return [...form.querySelectorAll('input, textarea, select')].map((field) => ({
-    name: field.getAttribute('name') || '',
-    type: field.getAttribute('type') || field.tagName.toLowerCase(),
-    value: field.type === 'file' ? getFileInputDebugValue(field) : field.value,
-    label: getFieldLabelDebugText(field),
-  }));
-}
-
-function getFileInputDebugValue(field) {
-  return [...(field.files || [])].map((file) => `${file.name}:${file.size}`).join(', ');
-}
-
-function getFieldLabelDebugText(field) {
-  const id = field.getAttribute('id');
-  const label = id ? document.querySelector(`label[for="${cssEscape(id)}"]`) : null;
-  return normalizeText(
-    [field.getAttribute('placeholder'), label?.textContent].filter(Boolean).join(' '),
-  );
-}
-
-function getVisibleRowDebugInfo() {
-  return [...document.querySelectorAll(ROW_SELECTOR)]
-    .filter((element) => element instanceof HTMLElement && element.offsetParent !== null)
-    .map(getRowDebugInfo);
-}
-
-function getRowsDebugDiff(beforeRows, afterRows) {
-  const beforeByTracking = new Map(beforeRows.map((row) => [row.tracking || row.text, row]));
-  return afterRows
-    .map((row) => {
-      const before = beforeByTracking.get(row.tracking || row.text);
-      if (!before) return { type: 'added', row };
-      if (JSON.stringify(before) === JSON.stringify(row)) return null;
-      return { type: 'changed', before, after: row };
-    })
-    .filter(Boolean)
-    .concat(
-      beforeRows
-        .filter(
-          (row) =>
-            !afterRows.some(
-              (after) => (after.tracking || after.text) === (row.tracking || row.text),
-            ),
-        )
-        .map((row) => ({ type: 'removed', row })),
-    );
-}
-
-function getRowDebugInfo(row) {
-  return {
-    tracking: getDebugTracking(row),
-    status: normalizeText(getRowStatus(row)?.textContent || ''),
-    text: normalizeText(row.textContent || '').slice(0, 500),
-    origin: row.getAttribute(ORIGIN_ATTRIBUTE) || '',
-  };
-}
-
-function getDebugTracking(row) {
-  return (
-    row.querySelector(`[${TRACKING_CODE_ATTRIBUTE}]`)?.getAttribute(TRACKING_CODE_ATTRIBUTE) ||
-    normalizeText(row.textContent || '').match(/[A-Z0-9]{10,}/)?.[0] ||
-    ''
-  );
-}
-
-function debugDeclaration(message, data) {
-  console.debug(DECLARATION_DEBUG_PREFIX, message, data || '');
-}
-
-function cssEscape(value) {
-  if (window.CSS?.escape) return CSS.escape(value);
-
-  return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
-}
-
 function isDescriptionNoise(text) {
   return (
     /^(?:[\d.,]+\s*[₾$€¥£₺₽]|[₾$€¥£₺₽]\s*[\d.,]+)/.test(text) ||
@@ -1707,38 +963,6 @@ function enhancePrice(price) {
   price.classList.toggle(HIDDEN_CLASS, !hasVisibleButton && !hasVisibleBadge);
 }
 
-function findByClasses(tag, parts, root = document) {
-  return findAllByClasses(root, parts, tag)[0] || null;
-}
-
-function findAllByClasses(root, parts, tag = '*') {
-  if (!root) return [];
-  return [...root.querySelectorAll(tag)].filter((element) => {
-    const className = element.getAttribute('class') || '';
-    return parts.every((part) => className.includes(part));
-  });
-}
-
-function findAllByText(root, pattern) {
-  if (!root) return [];
-  return [...root.querySelectorAll('*')].filter((element) =>
-    pattern.test(element.textContent || ''),
-  );
-}
-
-function add(element, name) {
-  element?.classList.add(`inex-enhanced-parcels__${name}`);
-  return element;
-}
-
-function setTextContent(element, value) {
-  if (element.textContent !== value) element.textContent = value;
-}
-
-function areAllChildrenHidden(element) {
-  return [...(element?.children || [])].every((child) => child.classList.contains(HIDDEN_CLASS));
-}
-
 function ensureParcelData() {
   const cached = readParcelDataCache();
   let shouldReschedule = false;
@@ -1751,18 +975,16 @@ function ensureParcelData() {
 
   if (parcelDataPromise || Date.now() - parcelDataFetchedAt < DATA_TTL) return;
 
-  parcelDataPromise = loadParcelData(cached?.info || new Map())
+  parcelDataPromise = loadParcelData(cached?.info || new Map(), TAKEOUT_STATUS)
     .then((info) => {
       if (!info) return;
 
       parcelInfoByTracking = info;
       parcelDataFetchedAt = Date.now();
       writeParcelDataCache(info);
-      debugDeclaration('parcel data refreshed', getParcelDataDebugSummary(info));
       shouldReschedule = true;
     })
-    .catch((error) => {
-      debugDeclaration('parcel data refresh failed', { error: error.message, hasCache: !!cached });
+    .catch(() => {
       if (!cached) return;
 
       parcelInfoByTracking = cached.info;
@@ -1773,265 +995,4 @@ function ensureParcelData() {
       parcelDataPromise = undefined;
       if (shouldReschedule) scheduleEnhance();
     });
-}
-
-function getParcelDataDebugSummary(info) {
-  const parcels = [...info.values()];
-  return {
-    count: parcels.length,
-    needsDeclarationRows: [...document.querySelectorAll(ROW_SELECTOR)]
-      .filter((row) => getRowDeclarationButton(row))
-      .map(getRowDebugInfo),
-  };
-}
-
-async function loadParcelData(cachedInfo) {
-  const token =
-    localStorage.getItem('accessToken') || sessionStorage.getItem('session_accessToken');
-  if (!token) return null;
-
-  const tokenType =
-    localStorage.getItem('tokenType') || sessionStorage.getItem('session_tokenType') || 'Bearer';
-  const headers = { Authorization: `${tokenType} ${token}`, 'Accept-Language': 'en' };
-  const list = await fetchJson(`${API_BASE}/front/cabinet/parcels?perPage=100`, { headers });
-  const parcels = flattenParcels(list);
-  const activeParcels = parcels.filter((parcel) => parcel.status !== Number(TAKEOUT_STATUS));
-
-  await mapWithConcurrency(activeParcels, EVENT_FETCH_CONCURRENCY, async (parcel) => {
-    const cached = cachedInfo.get(parcel.tracking);
-    try {
-      const events = await fetchParcelEvents(parcel.id, headers);
-      parcel.latestEvent = events.latestEvent;
-      parcel.eventCount = events.eventCount;
-    } catch {
-      parcel.latestEvent = cached?.latestEvent || null;
-      parcel.eventCount = cached?.eventCount || 0;
-    }
-  });
-
-  return new Map(
-    parcels.map((parcel) => {
-      const next = {
-        ...parcel,
-        processText: getProcessText(parcel),
-      };
-      return [parcel.tracking, next];
-    }),
-  );
-}
-
-function readParcelDataCache() {
-  try {
-    const cache = JSON.parse(localStorage.getItem(CACHE_STORAGE_KEY));
-    if (!cache?.fetchedAt || !Array.isArray(cache.parcels)) return null;
-
-    return {
-      fetchedAt: cache.fetchedAt,
-      info: new Map(cache.parcels.map((parcel) => [parcel.tracking, parcel])),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeParcelDataCache(info) {
-  try {
-    localStorage.setItem(
-      CACHE_STORAGE_KEY,
-      JSON.stringify({ fetchedAt: Date.now(), parcels: [...info.values()] }),
-    );
-  } catch {
-    return;
-  }
-}
-
-async function fetchJson(url, options) {
-  const response = await fetch(url, options);
-  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
-  return response.json();
-}
-
-async function mapWithConcurrency(items, limit, callback) {
-  let index = 0;
-
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (index < items.length) {
-        const currentIndex = index++;
-        await callback(items[currentIndex]);
-      }
-    }),
-  );
-}
-
-function flattenParcels(list) {
-  const parcels = [];
-
-  for (const flight of list?.data || []) {
-    const expectedArrival = flight.attributes?.expectedArrivedDate;
-    const flightOrigin = getOriginInfo(flight);
-    for (const locationType of ['deliveryLocations', 'locations']) {
-      for (const location of flight.relationships?.[locationType]?.data || []) {
-        const locationOrigin = getOriginInfo(location);
-        for (const customer of location.relationships?.customers?.data || []) {
-          for (const parcel of customer.relationships?.parcels?.data || []) {
-            const parcelOrigin = getOriginInfo(parcel);
-
-            parcels.push({
-              id: parcel.id,
-              status: Number(parcel.attributes?.status),
-              tracking: parcel.relationships?.parcelTrackings?.data?.[0]?.attributes?.tracking,
-              description: getParcelDescription(parcel.attributes),
-              expectedArrival,
-              origin: mergeOriginInfo(parcelOrigin, locationOrigin, flightOrigin),
-            });
-          }
-        }
-      }
-    }
-  }
-
-  return parcels.filter((parcel) => parcel.tracking);
-}
-
-function getParcelDescription(attributes) {
-  for (const key of ['description', 'comment', 'title', 'name', 'itemDescription', 'productName']) {
-    const value = attributes?.[key];
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-
-  return '';
-}
-
-function mergeOriginInfo(...items) {
-  const origin = {};
-
-  for (const item of items) {
-    origin.countryCode ||= item?.countryCode || '';
-    origin.countryName ||= item?.countryName || '';
-    origin.transportName ||= item?.transportName || '';
-    origin.transportType ||= item?.transportType || '';
-  }
-
-  return origin;
-}
-
-function mergeCountryInfo(...items) {
-  const origin = {};
-
-  for (const item of items) {
-    origin.countryCode ||= item?.countryCode || '';
-    origin.countryName ||= item?.countryName || '';
-  }
-
-  return origin;
-}
-
-function getOriginInfo(item) {
-  return mergeOriginInfo(getCountryInfo(item?.attributes), getTransportInfo(item?.attributes));
-}
-
-function getCountryInfo(attributes) {
-  const countryCode = getShipmentRouteCountry(attributes?.name);
-  if (!countryCode) return {};
-
-  return { countryCode, countryName: getCountryName(countryCode) };
-}
-
-function getShipmentRouteCountry(name) {
-  const routeCode = String(name || '').match(/^([A-Z]{2})(?:-|$)/)?.[1];
-  const countries = {
-    CH: 'CN',
-    CN: 'CN',
-    GR: 'GR',
-    TK: 'TR',
-    TR: 'TR',
-    US: 'US',
-  };
-
-  return countries[routeCode] || '';
-}
-
-function getCountryName(countryCode) {
-  const countries = {
-    CN: 'China',
-    GR: 'Greece',
-    TR: 'Turkey',
-    US: 'USA',
-  };
-
-  return countries[countryCode] || '';
-}
-
-function getTransportInfo(attributes) {
-  const transportType = normalizeTransportType(attributes?.shipmentType);
-  if (!transportType) return {};
-
-  const names = { air: 'Air', road: 'Road', sea: 'Sea' };
-  return { transportType, transportName: names[transportType] };
-}
-
-async function fetchParcelEvents(parcelId, headers) {
-  const events = await fetchJson(`${API_BASE}/front/cabinet/parcels/${parcelId}/events`, {
-    headers,
-  });
-  const event = events?.data?.[0];
-  if (!event) return { latestEvent: null, eventCount: 0 };
-
-  return {
-    latestEvent: {
-      name: event.relationships?.logisticEvent?.data?.attributes?.name,
-      type: event.relationships?.logisticEvent?.data?.attributes?.type,
-      date: event.attributes?.eventHappenedAt,
-    },
-    eventCount: events.data.length,
-  };
-}
-
-function getProcessText(parcel) {
-  const parts = [];
-  const eventName = getEventLabel(parcel.latestEvent);
-  const eventDate = formatDate(parcel.latestEvent?.date);
-  const eta = formatDate(parcel.expectedArrival);
-
-  if (eventName) parts.push(eventName);
-  if (eventDate) parts.push(eventDate);
-  if (eta) parts.push(`ETA ${eta}`);
-
-  return parts.join(' · ');
-}
-
-function getEventLabel(event) {
-  const type = event?.type || event?.name;
-  const labels = {
-    Received: 'Warehouse',
-    Departure: 'In transit',
-    Sent: 'Sent',
-    Landed: 'Landed',
-    DestinationTerminalProcessStarted: 'Terminal',
-    DestinationTerminalProcessFinished: 'Terminal done',
-    DestinationClearanceStarted: 'Customs',
-    DestinationClearanceFinished: 'Customs done',
-    DistributionInHub: 'Hub',
-    DistributionInPickupLocation: 'Pickup soon',
-  };
-
-  return labels[type] || event?.name?.replace(/ Process /g, ' ') || '';
-}
-
-function formatDate(value) {
-  const date = parseDate(value);
-  if (!date) return '';
-
-  return new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short' }).format(date);
-}
-
-function parseDate(value) {
-  if (!value) return null;
-
-  const normalized = /^\d{4}-\d{2}-\d{2} /.test(value) ? value.replace(' ', 'T') : value;
-  const date = new Date(normalized);
-  if (Number.isNaN(date.getTime())) return null;
-
-  return date;
 }
