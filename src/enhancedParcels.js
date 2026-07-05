@@ -410,7 +410,7 @@ function enhanceInfo(info, row, side) {
   findByClasses('*', ['h-10', 'w-10', 'rounded-full'], info)?.classList.add(HIDDEN_CLASS);
   add(info.firstElementChild, 'row-content');
   const body = add(findByClasses('div', ['flex-col', 'justify-center'], info), 'row-body');
-  const tracking = add(findByClasses('*', ['[direction:rtl]'], info), 'tracking');
+  const tracking = add(getTrackingElement(info), 'tracking');
   const status = add(findByClasses('div', ['rounded-full', 'tracking-1'], info), 'status');
   const meta = add(findByClasses('div', ['flex-wrap'], info), 'meta');
   const trackingCode = getTrackingCode(tracking);
@@ -478,6 +478,12 @@ function hidePaidItemCost(meta) {
   if (/^(?:[\d.,]+\s*[₾$€¥£₺₽]|[₾$€¥£₺₽]\s*[\d.,]+)/.test(text)) {
     price.classList.add(HIDDEN_CLASS);
   }
+}
+
+function getTrackingElement(info) {
+  return (
+    findByClasses('*', ['[direction:ltr]'], info) || findByClasses('*', ['[direction:rtl]'], info)
+  );
 }
 
 function enhanceParcelDetails() {
