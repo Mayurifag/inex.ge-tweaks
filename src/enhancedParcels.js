@@ -438,7 +438,8 @@ function enhanceInfo(info, row, side) {
     tracking?.getAttribute(DESCRIPTION_ATTRIBUTE) ||
     '';
   const origin = parcelInfo ? parcelInfo.origin : getStoredOriginInfo(row);
-  const arrived = isArrivedRow(status);
+  updateStatusDisplay(status, parcelInfo);
+  const arrived = isArrivedRow(status, parcelInfo);
 
   updateTrackingDisplay(tracking, trackingCode, description);
   storeOriginInfo(row, origin);
@@ -600,7 +601,7 @@ function hideEmptyFlights() {
 function getRowSortInfo(row) {
   const info = getRowParcelInfo(row);
   const status = row.querySelector('.inex-enhanced-parcels__status');
-  const arrived = isArrivedRow(status);
+  const arrived = isArrivedRow(status, info);
   const eventCount = getEventCount(info);
 
   return {
@@ -643,6 +644,11 @@ function updateProcessLine(statusCell, status, info, arrived) {
   }
 
   setTextContent(process, info.processText);
+}
+
+function updateStatusDisplay(status, info) {
+  if (!status || !info?.previewStatusText) return;
+  setTextContent(status, info.previewStatusText);
 }
 
 function ensureSideCell(row) {
@@ -909,7 +915,8 @@ function getDescriptionSource(body, tracking, status) {
   };
 }
 
-function isArrivedRow(status) {
+function isArrivedRow(status, info) {
+  if (info && typeof info.arrived === 'boolean') return info.arrived;
   return matchesStatusText(status, ARRIVED_RE);
 }
 

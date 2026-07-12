@@ -1,8 +1,9 @@
 import { mergeOriginInfo, normalizeTransportType } from './origin.js';
 
 const API_BASE = 'https://inex.ge/api/v1';
-const CACHE_STORAGE_KEY = 'inex_enhanced_parcels_data_v4';
+const CACHE_STORAGE_KEY = 'inex_enhanced_parcels_data_v9';
 const EVENT_FETCH_CONCURRENCY = 6;
+const ARRIVED_EVENT_TYPES = new Set(['DistributionInPickupLocation']);
 
 export const DATA_TTL = 5 * 60_000;
 
@@ -34,6 +35,8 @@ export async function loadParcelData(cachedInfo, takeoutStatus) {
     parcels.map((parcel) => {
       const next = {
         ...parcel,
+        arrived: isArrivedParcel(parcel),
+        previewStatusText: getEventLabel(parcel.latestEvent),
         processText: getProcessText(parcel),
       };
       return [parcel.tracking, next];
@@ -201,15 +204,18 @@ async function fetchParcelEvents(parcelId, headers) {
 
 function getProcessText(parcel) {
   const parts = [];
-  const eventName = getEventLabel(parcel.latestEvent);
-  const eventDate = formatDate(parcel.latestEvent?.date);
+  const eventDate = formatDateTime(parcel.latestEvent?.date);
   const eta = formatDate(parcel.expectedArrival);
 
-  if (eventName) parts.push(eventName);
   if (eventDate) parts.push(eventDate);
   if (eta) parts.push(`ETA ${eta}`);
 
   return parts.join(' · ');
+}
+
+function isArrivedParcel(parcel) {
+  if (!parcel.eventCount) return false;
+  return ARRIVED_EVENT_TYPES.has(parcel.latestEvent?.type || parcel.latestEvent?.name);
 }
 
 function getEventLabel(event) {
@@ -235,4 +241,37 @@ function formatDate(value) {
   if (!date) return '';
 
   return new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short' }).format(date);
+}
+
+function formatDateTime(value) {
+  const date = parseDate(value);
+  if (!date) return '';
+
+  const dayLabel = formatRelativeDay(date);
+  const time = new Intl.DateTimeFormat('en', {
+    hour: '2-digit',
+    hour12: false,
+    minute: '2-digit',
+  }).format(date);
+
+  return `${dayLabel}, ${time}`;
+}
+
+function formatRelativeDay(date) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const day = new Date(date);
+  day.setHours(0, 0, 0, 0);
+
+  const diffDays = Math.round((today.getTime() - day.getTime()) / 86_400_000);
+
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return '1 day ago';
+  if (diffDays > 1 && diffDays < 7) return `${diffDays} days ago`;
+
+  return new Intl.DateTimeFormat('en', {
+    day: 'numeric',
+    month: 'short',
+  }).format(date);
 }
